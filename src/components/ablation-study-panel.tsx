@@ -1,20 +1,15 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { MODELS, modelById, encodeWithModel } from "@/lib/stego/models";
+import { modelById, encodeWithModel } from "@/lib/stego/models";
 import { generateSampleImage } from "@/lib/stego/samples";
 import { type RgbImage } from "@/lib/stego/pixels";
 import {
-  Sparkles,
   Play,
-  CheckCircle2,
-  FileCode,
   Download,
   Copy,
   Check,
-  Cpu,
-  Layers,
-  ShieldCheck,
   TrendingUp,
+  Trophy,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -38,204 +33,53 @@ export type AblationRow = {
   authStatus: string;
 };
 
-// Standard reference benchmarks for fair offline comparison
-const DEFAULT_ABLATION_ROWS: AblationRow[] = [
-  {
-    id: "ablation_m1",
-    name: "Model 1: EMD + OPAP",
-    short: "M1: EMD+OPAP",
-    description: "Sequential EMD (n=2, radix-5) followed by OPAP without adaptive guidance",
-    psnr: 68.45,
-    ssim: 0.9998,
-    mse: 0.0093,
-    capacityBits: 76084,
-    payloadBits: 320,
-    modifiedPixels: 138,
-    modifiedPixelPct: 43.1,
-    averageAbsError: 0.4312,
-    maxPixelError: 1,
-    extractionAccuracy: 100.0,
-    opapOptimizedCount: 14,
-    runtimeMs: 18.4,
-    authStatus: "UNENCRYPTED",
-  },
-  {
-    id: "ablation_m2",
-    name: "Model 2: CNN-Assisted Adaptive EMD + OPAP",
-    short: "M2: CNN+EMD",
-    description: "Convolutional feature extractor and local variance/gradient guidance",
-    psnr: 71.12,
-    ssim: 0.9999,
-    mse: 0.0051,
-    capacityBits: 76084,
-    payloadBits: 320,
-    modifiedPixels: 135,
-    modifiedPixelPct: 42.2,
-    averageAbsError: 0.4219,
-    maxPixelError: 1,
-    extractionAccuracy: 100.0,
-    opapOptimizedCount: 16,
-    runtimeMs: 32.7,
-    authStatus: "UNENCRYPTED",
-  },
-  {
-    id: "ablation_m3",
-    name: "Model 3: CNN + Attention + Adaptive EMD + OPAP",
-    short: "M3: Attention",
-    description: "Adds multi-scale spatial and channel attention weights to cost map",
-    psnr: 73.80,
-    ssim: 1.0000,
-    mse: 0.0027,
-    capacityBits: 76084,
-    payloadBits: 320,
-    modifiedPixels: 132,
-    modifiedPixelPct: 41.3,
-    averageAbsError: 0.4125,
-    maxPixelError: 1,
-    extractionAccuracy: 100.0,
-    opapOptimizedCount: 19,
-    runtimeMs: 48.2,
-    authStatus: "UNENCRYPTED",
-  },
-  {
-    id: "ablation_m4",
-    name: "Model 4: CNN + Attention + INN + Adaptive EMD + OPAP",
-    short: "M4: INN+EMD+OPAP",
-    description: "Learned CNN + Attention + INN reversible wavelet coupling (Unencrypted)",
-    psnr: 75.12,
-    ssim: 1.0000,
-    mse: 0.0020,
-    capacityBits: 76084,
-    payloadBits: 320,
-    modifiedPixels: 98,
-    modifiedPixelPct: 12.2,
-    averageAbsError: 0.1225,
-    maxPixelError: 1,
-    extractionAccuracy: 100.0,
-    opapOptimizedCount: 98,
-    runtimeMs: 42.5,
-    authStatus: "UNENCRYPTED",
-  },
-  {
-    id: "ares_hybrid_inn",
-    name: "Hybrid Model: ARES-Hybrid-INN-CNN",
-    short: "ARES-Hybrid-INN-CNN",
-    description: "Hybrid INN-CNN encoder-decoder attention + Radix-33 Adaptive EMD-OPAP + AES-GCM",
-    psnr: 75.85,
-    ssim: 1.0000,
-    mse: 0.0017,
-    capacityBits: 76084,
-    payloadBits: 544,
-    modifiedPixels: 84,
-    modifiedPixelPct: 6.1,
-    averageAbsError: 0.0612,
-    maxPixelError: 1,
-    extractionAccuracy: 100.0,
-    opapOptimizedCount: 84,
-    runtimeMs: 46.8,
-    authStatus: "AUTHENTICATED",
-  },
-  {
-    id: "ablation_m5",
-    name: "Model 5: Proposed ARES-EMD-OPAP-INN (Full Pipeline)",
-    short: "ARES-EMD-OPAP-INN",
-    description: "Recommended full pipeline: 2-stage INN reversible coupling + CNN attention + Radix-65 EMD-OPAP + AES-GCM",
-    psnr: 76.94,
-    ssim: 1.0000,
-    mse: 0.0013,
-    capacityBits: 76084,
-    payloadBits: 544,
-    modifiedPixels: 68,
-    modifiedPixelPct: 3.1,
-    averageAbsError: 0.0312,
-    maxPixelError: 1,
-    extractionAccuracy: 100.0,
-    opapOptimizedCount: 68,
-    runtimeMs: 44.1,
-    authStatus: "AUTHENTICATED",
-  },
+export type BaselineEvalRow = {
+  id: string;
+  algorithm: string;
+  type: string;
+  bpp: number;
+  psnr: number;
+  ssim: number;
+  mse: number;
+  maxErr: number;
+  modPct: number;
+  recovery: boolean;
+  crypto: string;
+};
+
+const ABLATION_MODEL_IDS = [
+  "ablation_m1",
+  "ablation_m2",
+  "ablation_m3",
+  "ablation_m4",
+  "ares_hybrid_inn",
+  "ablation_m5",
 ];
 
-const BASELINE_COMPARISON_ROWS = [
-  {
-    algorithm: "Traditional Sequential LSB",
-    type: "Classical",
-    bpp: 1.0,
-    psnr: 51.14,
-    ssim: 0.9892,
-    mse: 0.5012,
-    maxErr: 1,
-    modPct: 50.0,
-    crypto: "None",
-  },
-  {
-    algorithm: "Basic EMD (Zhang & Wang 2006)",
-    type: "Modification Direction",
-    bpp: 1.16,
-    psnr: 54.32,
-    ssim: 0.9945,
-    mse: 0.4015,
-    maxErr: 1,
-    modPct: 40.0,
-    crypto: "None",
-  },
-  {
-    algorithm: "EMD + OPAP (Unguided)",
-    type: "Error Optimized",
-    bpp: 1.16,
-    psnr: 68.45,
-    ssim: 0.9998,
-    mse: 0.0093,
-    maxErr: 1,
-    modPct: 43.1,
-    crypto: "None",
-  },
-  {
-    algorithm: "Hybrid Model: ARES-Hybrid-INN-CNN",
-    type: "Hybrid INN + CNN",
-    bpp: 1.16,
-    psnr: 75.85,
-    ssim: 1.0000,
-    mse: 0.0017,
-    maxErr: 1,
-    modPct: 6.1,
-    crypto: "AES-256-GCM",
-  },
-  {
-    algorithm: "Proposed ARES-EMD-OPAP-INN (Full Pipeline)",
-    type: "Proposed (Recommended)",
-    bpp: 1.16,
-    psnr: 76.94,
-    ssim: 1.0000,
-    mse: 0.0013,
-    maxErr: 1,
-    modPct: 3.1,
-    crypto: "AES-256-GCM",
-  },
+const BASELINE_EVAL_MODEL_IDS = [
+  "paper_model_02",
+  "paper_model_01",
+  "paper_model_04",
+  "ablation_m1",
+  "ares_hybrid_inn",
+  "ablation_m5",
 ];
 
 export function AblationStudyPanel({ testImage }: { testImage?: RgbImage }) {
-  const [rows, setRows] = useState<AblationRow[]>(DEFAULT_ABLATION_ROWS);
+  const [rows, setRows] = useState<AblationRow[]>([]);
+  const [baselineRows, setBaselineRows] = useState<BaselineEvalRow[]>([]);
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  async function runLiveAblation() {
+  const runLiveAblation = useCallback(async () => {
     setRunning(true);
     const img = testImage ?? generateSampleImage("portrait", 256, 256);
     const secret = "ARES-EMD-OPAP-INN Research Benchmark Payload 2026";
     const password = "ResearchGradePassword!";
 
-    const evalModelIds = [
-      "ablation_m1",
-      "ablation_m2",
-      "ablation_m3",
-      "ablation_m4",
-      "ares_hybrid_inn",
-      "ablation_m5",
-    ];
     const updatedRows: AblationRow[] = [];
 
-    for (const mid of evalModelIds) {
+    for (const mid of ABLATION_MODEL_IDS) {
       const model = modelById(mid);
       const t0 = performance.now();
       const out = await encodeWithModel(model, img, secret, password);
@@ -262,15 +106,59 @@ export function AblationStudyPanel({ testImage }: { testImage?: RgbImage }) {
       });
     }
 
-    setRows(updatedRows);
-    setRunning(false);
-  }
+    const updatedBaselines: BaselineEvalRow[] = [];
+    for (const mid of BASELINE_EVAL_MODEL_IDS) {
+      const model = modelById(mid);
+      const out = await encodeWithModel(model, img, secret, password);
+      updatedBaselines.push({
+        id: model.id,
+        algorithm: model.name,
+        type: model.usesInn
+          ? "INN + Adaptive EMD-OPAP"
+          : model.usesEmd
+          ? "EMD + OPAP"
+          : model.usesHamming
+          ? "Hamming(7,3) Adaptive LSB"
+          : model.usesPm1
+          ? "Adaptive ±1 LSB"
+          : "Keyed LSB Substitution",
+        bpp: Number(out.metrics.bpp.toFixed(4)),
+        psnr: Number(out.metrics.psnr.toFixed(2)),
+        ssim: Number(out.metrics.ssim.toFixed(4)),
+        mse: Number(out.metrics.mse.toFixed(4)),
+        maxErr: out.maxPixelError,
+        modPct: Number((out.metrics.modifiedPixelPct ?? 0).toFixed(2)),
+        recovery: out.metrics.recovery,
+        crypto: model.usesAesGcm ? "AES-256-GCM" : "Keyed MAC",
+      });
+    }
 
-  // Dynamically determine which model achieved the best result (zero false positives)
+    setRows(updatedRows);
+    setBaselineRows(updatedBaselines);
+    setRunning(false);
+  }, [testImage]);
+
+  useEffect(() => {
+    void runLiveAblation();
+  }, [runLiveAblation]);
+
+  // Strictly empirical best model determination: requires 100% recovery, highest measured PSNR (ties broken by lowest MSE)
   const validRows = rows.filter((r) => r.extractionAccuracy === 100.0);
   const bestRow =
     validRows.length > 0
-      ? validRows.reduce((best, cur) => (cur.psnr > best.psnr ? cur : best), validRows[0]!)
+      ? validRows.reduce((best, cur) => {
+          if (cur.psnr !== best.psnr) return cur.psnr > best.psnr ? cur : best;
+          return cur.mse < best.mse ? cur : best;
+        }, validRows[0]!)
+      : null;
+
+  const validBaselineRows = baselineRows.filter((b) => b.recovery);
+  const bestBaselineRow =
+    validBaselineRows.length > 0
+      ? validBaselineRows.reduce((best, cur) => {
+          if (cur.psnr !== best.psnr) return cur.psnr > best.psnr ? cur : best;
+          return cur.mse < best.mse ? cur : best;
+        }, validBaselineRows[0]!)
       : null;
 
   function copyLatexTable() {
@@ -403,32 +291,22 @@ export function AblationStudyPanel({ testImage }: { testImage?: RgbImage }) {
             <tbody className="divide-y divide-border/50 font-sans">
               {rows.map((r, idx) => {
                 const isBest = bestRow?.id === r.id;
-                const isRecommended = r.id === "ablation_m5";
                 const isHybrid = r.id === "ares_hybrid_inn";
                 return (
                   <tr
                     key={r.id}
                     className={cn(
                       "hover:bg-muted/20 transition-colors",
-                      isBest ? "bg-emerald-500/10 font-semibold" : isRecommended || isHybrid ? "bg-primary/5" : "",
+                      isBest ? "bg-emerald-500/10 font-semibold" : "",
                     )}
                   >
                     <td className="px-3 py-3">
                       <div className="flex flex-wrap items-center gap-1.5">
+                        {isBest && <Trophy className="size-3.5 text-amber-500 shrink-0" />}
                         <span className="font-bold text-foreground">{r.name}</span>
                         {isBest && (
                           <span className="rounded bg-emerald-600 text-white px-1.5 py-0.2 text-[9px] font-bold">
-                            BEST RESULT
-                          </span>
-                        )}
-                        {isRecommended && (
-                          <span className="rounded bg-primary text-primary-foreground px-1.5 py-0.2 text-[9px] font-bold">
-                            USE ARES-EMD-OPAP-INN
-                          </span>
-                        )}
-                        {isHybrid && (
-                          <span className="rounded bg-blue-500/20 text-blue-700 dark:text-blue-300 px-1.5 py-0.2 text-[9px] font-bold">
-                            HYBRID INN-CNN
+                            BEST MODEL
                           </span>
                         )}
                       </div>
@@ -480,18 +358,28 @@ export function AblationStudyPanel({ testImage }: { testImage?: RgbImage }) {
 
       {/* Baseline Comparison Table (Section 17) */}
       <div className="rounded-xl border border-border bg-card p-5 shadow-xs">
-        <div className="mb-3">
-          <div className="flex items-center gap-2">
-            <span className="rounded bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary font-mono">
-              Section 17 Specification
-            </span>
-            <h3 className="font-display text-base font-bold text-ink">
-              Baseline Methodology Comparison
-            </h3>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-primary/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary font-mono">
+                Section 17 Specification
+              </span>
+              <h3 className="font-display text-base font-bold text-ink">
+                Live Baseline Methodology Comparison
+              </h3>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Direct live experimental comparison computed on the active cover image across classical LSB, adaptive LSB, Hamming(7,3), unguided EMD+OPAP, Hybrid INN-CNN, and ARES-EMD-OPAP-INN.
+            </p>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Direct experimental comparison against traditional LSB, basic EMD, unguided EMD+OPAP, and proposed ARES-EMD-OPAP.
-          </p>
+          {bestBaselineRow && (
+            <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs">
+              <Trophy className="size-4 text-amber-500 shrink-0" />
+              <span className="font-semibold text-foreground">
+                Best Baseline Method: {bestBaselineRow.algorithm} ({bestBaselineRow.psnr.toFixed(2)} dB)
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -500,7 +388,7 @@ export function AblationStudyPanel({ testImage }: { testImage?: RgbImage }) {
               <tr>
                 <th className="px-3 py-2.5">Method</th>
                 <th className="px-3 py-2.5">Type</th>
-                <th className="px-3 py-2.5">Capacity (bpp)</th>
+                <th className="px-3 py-2.5">Payload Rate (bpp)</th>
                 <th className="px-3 py-2.5">PSNR (dB)</th>
                 <th className="px-3 py-2.5">SSIM</th>
                 <th className="px-3 py-2.5">MSE</th>
@@ -510,32 +398,33 @@ export function AblationStudyPanel({ testImage }: { testImage?: RgbImage }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50 font-sans">
-              {BASELINE_COMPARISON_ROWS.map((b) => {
-                const isFull = b.algorithm.includes("Proposed ARES-EMD-OPAP");
+              {baselineRows.map((b) => {
+                const isBestBaseline = bestBaselineRow?.id === b.id;
                 return (
                   <tr
-                    key={b.algorithm}
+                    key={b.id}
                     className={cn(
                       "hover:bg-muted/20 transition-colors",
-                      isFull ? "bg-primary/5 font-semibold" : "",
+                      isBestBaseline ? "bg-emerald-500/10 font-semibold" : "",
                     )}
                   >
                     <td className="px-3 py-3 font-semibold text-foreground flex items-center gap-1.5">
+                      {isBestBaseline && <Trophy className="size-3.5 text-amber-500 shrink-0" />}
                       <span>{b.algorithm}</span>
-                      {isFull && (
-                        <span className="rounded bg-primary text-primary-foreground px-1.5 py-0.2 text-[9px] font-bold">
-                          PROPOSED
+                      {isBestBaseline && (
+                        <span className="rounded bg-emerald-600 text-white px-1.5 py-0.2 text-[9px] font-bold">
+                          BEST MODEL
                         </span>
                       )}
                     </td>
                     <td className="px-3 py-3 text-muted-foreground">{b.type}</td>
-                    <td className="px-3 py-3 font-mono">{b.bpp.toFixed(2)} bpp</td>
+                    <td className="px-3 py-3 font-mono">{b.bpp.toFixed(4)} bpp</td>
                     <td className="px-3 py-3 font-mono text-emerald-700 dark:text-emerald-400 font-bold">
                       {b.psnr.toFixed(2)} dB
                     </td>
                     <td className="px-3 py-3 font-mono">{b.ssim.toFixed(4)}</td>
                     <td className="px-3 py-3 font-mono text-muted-foreground">{b.mse.toFixed(4)}</td>
-                    <td className="px-3 py-3 font-mono">{b.modPct.toFixed(1)}%</td>
+                    <td className="px-3 py-3 font-mono">{b.modPct.toFixed(2)}%</td>
                     <td className="px-3 py-3 font-mono">&plusmn;{b.maxErr}</td>
                     <td className="px-3 py-3 font-mono text-xs">
                       <span

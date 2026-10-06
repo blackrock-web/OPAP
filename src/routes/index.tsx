@@ -32,7 +32,7 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/")({ component: DashboardPage });
 
 function DashboardPage() {
-  const { bench, history, setEncode, lastCoverUrl, lastStegoUrl, lastMetrics, isHydrated } = useSession();
+  const { bench, history, setEncode, lastCover, lastCoverUrl, lastStegoUrl, lastMetrics, isHydrated } = useSession();
   const [hasMounted, setHasMounted] = useState(false);
 
   useEffect(() => {
@@ -162,7 +162,7 @@ function DashboardPage() {
       <PageHeader
         kicker="ARES-EMD-OPAP-INN & Hybrid INN-CNN Research Platform"
         title="ARES-EMD-OPAP-INN Adaptive Steganography Dashboard"
-        description="Recommended Architecture: Use ARES-EMD-OPAP-INN (2-stage Invertible Neural Network reversible wavelet + affine coupling fused with CNN spatial/channel attention, Generalized EMD, and OPAP distortion optimization) alongside the ARES-Hybrid-INN-CNN model."
+        description="Evaluate INN reversible wavelet + affine coupling fused with CNN spatial/channel attention, Generalized EMD, and OPAP distortion optimization alongside ARES-Hybrid-INN-CNN and published baselines with live empirical measurements."
         actions={
           <Link
             to="/batch-lab"
@@ -176,20 +176,17 @@ function DashboardPage() {
       />
 
       <div className="space-y-6 w-full">
-        {/* Clear Recommendation Banner: Use ARES-EMD-OPAP-INN & ARES-Hybrid-INN-CNN */}
-        <div className="rounded-xl border-2 border-primary/50 bg-gradient-to-r from-primary/10 via-card to-emerald-500/10 p-4 shadow-xs">
+        {/* Quick Model Switcher Banner */}
+        <div className="rounded-xl border border-border bg-card p-4 shadow-xs">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div className="space-y-1">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded bg-primary px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground">
-                  Recommended Model: Use ARES-EMD-OPAP-INN
-                </span>
-                <span className="rounded bg-blue-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">
-                  Also Active: ARES-Hybrid-INN-CNN
+                <span className="rounded bg-primary/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary">
+                  Zero Fake Assumptions · Empirical Best Model Verification
                 </span>
               </div>
               <p className="font-display text-sm font-bold text-foreground">
-                Use <span className="text-primary">ARES-EMD-OPAP-INN</span> for maximum imperceptibility (Radix-65 INN-Coupled EMD + OPAP + AES-256-GCM) or test alongside <span className="text-foreground">ARES-Hybrid-INN-CNN</span> in live benchmarks.
+                Test <span className="text-primary">ARES-EMD-OPAP-INN</span>, <span className="text-foreground">ARES-Hybrid-INN-CNN</span>, or any ablation/baseline model — only the empirically highest-performing model is highlighted as best.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -200,7 +197,7 @@ function DashboardPage() {
                 className="h-8 text-xs font-bold gap-1.5"
               >
                 <Zap className="size-3.5" />
-                <span>Use ARES-EMD-OPAP-INN</span>
+                <span>Select ARES-EMD-OPAP-INN</span>
               </Button>
               <Button
                 size="sm"
@@ -209,7 +206,7 @@ function DashboardPage() {
                 className="h-8 text-xs font-semibold gap-1.5"
               >
                 <Cpu className="size-3.5" />
-                <span>Use ARES-Hybrid-INN-CNN</span>
+                <span>Select ARES-Hybrid-INN-CNN</span>
               </Button>
             </div>
           </div>
@@ -220,30 +217,30 @@ function DashboardPage() {
           <div className="rounded-xl border border-border bg-card p-4 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Recommended Model
+                Active Model
               </span>
               <Cpu className="size-4 text-primary" />
             </div>
             <p className="mt-2 font-display text-xl font-bold text-foreground">
-              ARES-EMD-OPAP-INN
+              {selectedModel.short}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              INN Reversible Wavelet Coupling + Generalized EMD + OPAP
+              {selectedModel.usesInn ? "INN Wavelet Coupling + EMD + OPAP" : selectedModel.paper}
             </p>
           </div>
 
           <div className="rounded-xl border border-border bg-card p-4 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Hybrid Architecture
+                Ablation Suite
               </span>
               <BarChart3 className="size-4 text-emerald-500" />
             </div>
             <p className="mt-2 font-display text-xl font-bold text-foreground">
-              ARES-Hybrid-INN-CNN
+              6 Live Configurations
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Multi-scale CNN Attention + Invertible Neural Network (INN)
+              Computed directly on cover image pixels
             </p>
           </div>
 
@@ -273,7 +270,7 @@ function DashboardPage() {
               True Empirical Best
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Real-time ranking · Shows whichever model gets best result
+              Only highlights whichever model achieves #1 measured result
             </p>
           </div>
         </div>
@@ -330,7 +327,7 @@ function DashboardPage() {
               {/* Algorithm / Ablation Mode Selection */}
               <div>
                 <Label htmlFor="model-select" className="text-xs font-semibold text-muted-foreground">
-                  Embedding Mode (Recommended: Use ARES-EMD-OPAP-INN)
+                  Embedding Mode
                 </Label>
                 <select
                   id="model-select"
@@ -338,9 +335,9 @@ function DashboardPage() {
                   onChange={(e) => setSelectedModelId(e.target.value)}
                   className="mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <optgroup label="Proposed & Hybrid INN Architectures (Recommended)">
-                    <option value="ares_emd_opap">★ ARES-EMD-OPAP-INN (Recommended: INN Wavelet Coupling + CNN Attention + EMD + OPAP + AES-GCM)</option>
-                    <option value="ares_hybrid_inn">★ ARES-Hybrid-INN-CNN (Hybrid INN + CNN Encoder-Decoder + Adaptive EMD-OPAP + AES-GCM)</option>
+                  <optgroup label="INN & Hybrid CNN Architectures">
+                    <option value="ares_emd_opap">ARES-EMD-OPAP-INN (INN Wavelet Coupling + CNN Attention + EMD + OPAP + AES-GCM)</option>
+                    <option value="ares_hybrid_inn">ARES-Hybrid-INN-CNN (Hybrid INN + CNN Encoder-Decoder + Adaptive EMD-OPAP + AES-GCM)</option>
                   </optgroup>
                   <optgroup label="Ablation Experiment Modes (Section 16)">
                     <option value="ablation_m1">Model 1: EMD + OPAP (Sequential, unguided)</option>
@@ -561,7 +558,7 @@ function DashboardPage() {
         </div>
 
         {/* Live Ablation & Hybrid INN-CNN Comparison Panel */}
-        <AblationStudyPanel />
+        <AblationStudyPanel testImage={lastCover} />
 
         {/* Evaluated Model Registry Cards */}
         <div className="rounded-xl border border-border bg-card p-5 shadow-xs">
@@ -581,30 +578,17 @@ function DashboardPage() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {MODELS.filter((m) => m.kind !== "ablation").map((m) => {
-              const isPrimaryAres = m.id === "ares_emd_opap";
-              const isHybridAres = m.id === "ares_hybrid_inn";
-              const isAres = isPrimaryAres || isHybridAres;
               return (
                 <div
                   key={m.id}
-                  className={cn(
-                    "flex flex-col justify-between rounded-lg border p-3.5 text-xs transition-all",
-                    isAres
-                      ? "border-primary/50 bg-primary/5 shadow-xs ring-1 ring-primary/30"
-                      : "border-border bg-card",
-                  )}
+                  className="flex flex-col justify-between rounded-lg border border-border bg-card p-3.5 text-xs transition-all"
                 >
                   <div>
                     <div className="flex items-start justify-between gap-2">
                       <span className="font-display text-sm font-bold text-foreground">
                         {m.name}
                       </span>
-                      <span
-                        className={cn(
-                          "rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider",
-                          isAres ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
-                        )}
-                      >
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
                         {m.status}
                       </span>
                     </div>
@@ -615,8 +599,7 @@ function DashboardPage() {
                   </div>
                   <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2 font-mono text-[10px] text-muted-foreground">
                     <span>Algorithm: {m.usesInn ? "INN + EMD + OPAP" : m.usesEmd ? "EMD + OPAP" : "LSB / Permutation"}</span>
-                    {isPrimaryAres && <span className="text-primary font-bold">USE ARES-EMD-OPAP-INN</span>}
-                    {isHybridAres && <span className="text-blue-600 dark:text-blue-400 font-bold">HYBRID INN-CNN</span>}
+                    <span>{m.methodKey}</span>
                   </div>
                 </div>
               );

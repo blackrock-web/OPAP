@@ -66,20 +66,19 @@ export type ModelDef = {
   usesAdaptive?: boolean;
   usesPm1?: boolean;
   usesCompensate?: boolean;
-  baselineExtraNoise?: number;
   ablationLevel?: 1 | 2 | 3 | 4 | 5;
 };
 
 export const MODELS: ModelDef[] = [
-  // 1. PRIMARY PROPOSED ARCHITECTURE: ARES-EMD-OPAP-INN
+  // 1. PRIMARY ARCHITECTURE: ARES-EMD-OPAP-INN
   {
     id: "ares_emd_opap",
-    name: "ARES-EMD-OPAP-INN (Proposed)",
+    name: "ARES-EMD-OPAP-INN",
     short: "ARES-EMD-OPAP-INN",
     paper: "INN-Coupled & CNN-Attention Adaptive EMD-OPAP Steganography with AES-256-GCM",
     kind: "proposed",
     status: "TRAINED",
-    note: "Recommended primary architecture: 2-stage Invertible Neural Network (INN) reversible Haar wavelet + affine coupling layer fused with CNN spatial/channel attention guides Generalized Radix-65 EMD embedding and OPAP distortion optimization with compact AES-256-GCM AEAD.",
+    note: "2-stage Invertible Neural Network (INN) reversible Haar wavelet + affine coupling layer fused with CNN spatial/channel attention guiding Generalized Radix-65 EMD embedding and OPAP distortion optimization with compact AES-256-GCM AEAD.",
     methodKey: "ares-emd-opap-inn",
     algorithmType: "emd_opap",
     usesEmd: true,
@@ -93,12 +92,12 @@ export const MODELS: ModelDef[] = [
   // 2. HYBRID INN-CNN MODEL: ARES-Hybrid-INN-CNN
   {
     id: "ares_hybrid_inn",
-    name: "ARES-Hybrid-INN-CNN (Hybrid Model)",
+    name: "ARES-Hybrid-INN-CNN",
     short: "ARES-Hybrid-INN-CNN",
     paper: "Hybrid Invertible Neural Network (INN) + CNN Attention Adaptive EMD-OPAP",
     kind: "proposed",
     status: "TRAINED",
-    note: "Hybrid INN-CNN architecture: combines multi-scale CNN encoder-decoder spatial attention and INN reversible affine coupling blocks with Radix-33 Adaptive EMD-OPAP and AES-256-GCM authentication.",
+    note: "Combines multi-scale CNN encoder-decoder spatial attention and INN reversible affine coupling blocks with Radix-33 Adaptive EMD-OPAP and AES-256-GCM authentication.",
     methodKey: "ares-hybrid-inn-cnn",
     algorithmType: "hybrid",
     usesEmd: true,
@@ -184,12 +183,12 @@ export const MODELS: ModelDef[] = [
   },
   {
     id: "ablation_m5",
-    name: "Model 5: Proposed ARES-EMD-OPAP-INN (Full Pipeline)",
+    name: "Model 5: ARES-EMD-OPAP-INN (Full Pipeline)",
     short: "M5: ARES-EMD-OPAP-INN",
     paper: "Ablation Study 5 — CNN + Attention + INN + Adaptive EMD + OPAP + AES-GCM",
     kind: "ablation",
     status: "ACTIVE",
-    note: "Complete proposed ARES-EMD-OPAP-INN pipeline: full INN reversible wavelet coupling, CNN attention, PBKDF2 + AES-256-GCM AEAD, and Radix-65 EMD-OPAP.",
+    note: "Complete ARES-EMD-OPAP-INN pipeline: full INN reversible wavelet coupling, CNN attention, PBKDF2 + AES-256-GCM AEAD, and Radix-65 EMD-OPAP.",
     methodKey: "ablation-m5-ares-inn",
     algorithmType: "emd_opap",
     usesEmd: true,
@@ -236,7 +235,6 @@ export const MODELS: ModelDef[] = [
     usesAesGcm: false,
     usesAdaptive: false,
     usesPm1: false,
-    baselineExtraNoise: 1,
   },
   {
     id: "paper_model_03",
@@ -291,7 +289,6 @@ export const MODELS: ModelDef[] = [
     usesAesGcm: false,
     usesAdaptive: false,
     usesPm1: false,
-    baselineExtraNoise: 2,
   },
 ];
 
@@ -540,20 +537,6 @@ export async function encodeWithModel(
     stats = hamming74Embed(stego, pos, bits);
   } else {
     stats = minLsbEmbed(stego, pos, bits, 2, Boolean(model.usesPm1));
-  }
-
-  // Apply realistic baseline multi-bit / block stitching carrier overhead for non-adaptive baselines
-  // on non-payload carrier channel (Red channel LSBs) so extraction on Blue channel remains 100% bit-exact
-  if (model.baselineExtraNoise && model.baselineExtraNoise > 0) {
-    const extraCount = Math.min(
-      pos.length,
-      Math.floor(bits.length * (model.baselineExtraNoise === 1 ? 0.32 : 0.78)),
-    );
-    for (let i = 0; i < extraCount; i++) {
-      const p = pos[pos.length - 1 - i]!;
-      const idx = (p.y * stego.width + p.x) * 4; // Red channel
-      stego.data[idx] = stego.data[idx]! ^ 1;
-    }
   }
 
   const encodeMs = performance.now() - t0;

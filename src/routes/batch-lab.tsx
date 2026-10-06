@@ -24,7 +24,6 @@ import {
 } from "@/lib/stats/friedman";
 import {
   METRIC_OPTIONS,
-  REFERENCE_BENCHMARK_ROWS,
   type MetricType,
 } from "@/lib/stats/sample-data";
 import { CDDiagram } from "@/components/cd-diagram";
@@ -428,13 +427,105 @@ export function BatchLabPage() {
     abortRef.current = true;
   };
 
-  // Determine active rows for statistical analysis
-  // If user has run batch tests, use live bench; otherwise provide seamless fallback to reference data
+  // Determine active rows for statistical analysis (strictly live empirical benchmark rows)
   const hasLiveResults = bench.length > 0;
   const activeRows = useMemo<BenchRow[]>(() => {
-    if (hasLiveResults) return bench;
-    return REFERENCE_BENCHMARK_ROWS;
-  }, [hasLiveResults, bench]);
+    return bench;
+  }, [bench]);
+
+  const autoBootstrappedRef = useRef(false);
+  useEffect(() => {
+    if (autoBootstrappedRef.current || bench.length > 0 || isRunning) return;
+    autoBootstrappedRef.current = true;
+    void (async () => {
+      const samples = SAMPLE_COVERS.slice(0, 6);
+      const loaded: BatchImageItem[] = [];
+      for (let i = 0; i < samples.length; i++) {
+        const s = samples[i]!;
+        const cover = s.generate();
+        const thumb = imageToDataUrl(cover);
+        loaded.push({
+          id: `sample_${s.id}_${Date.now()}_${i}`,
+          name: `${s.name.split(" ")[0]}.png`,
+          sizeStr: `${cover.width} × ${cover.height} px`,
+          width: cover.width,
+          height: cover.height,
+          cover,
+          thumbnailUrl: thumb,
+          status: "completed",
+          progressPct: 100,
+        });
+      }
+      setImages(loaded);
+      if (loaded[0]) setSelectedImageTab(loaded[0].name);
+
+      const modelsToRun = BENCHMARK_MODELS;
+      const collectedRows: BenchRow[] = [];
+      const newStegoOutputs: Record<
+        string,
+        { stegoUrl: string; diffUrl: string; recovered: string; coverUrl: string }
+      > = {};
+
+      for (const imgItem of loaded) {
+        for (const model of modelsToRun) {
+          const t0 = performance.now();
+          try {
+            const out = await encodeWithModel(
+              model,
+              imgItem.cover,
+              payloadText.trim(),
+              passphrase,
+            );
+            const duration = Math.round(performance.now() - t0);
+            const stegoUrl = imageToDataUrl(out.stego);
+            const diffMap = computeDifferenceMap(imgItem.cover, out.stego, 30);
+            const diffUrl = imageToDataUrl(diffMap);
+
+            newStegoOutputs[`${imgItem.name}:::${model.id}`] = {
+              stegoUrl,
+              diffUrl,
+              recovered: out.recovered,
+              coverUrl: imgItem.thumbnailUrl,
+            };
+
+            collectedRows.push({
+              imageName: imgItem.name,
+              modelId: model.id,
+              metrics: out.metrics,
+              recovered: out.recovered,
+              stegoUrl,
+              diffUrl,
+              durationMs: duration,
+            });
+          } catch (err) {
+            const duration = Math.round(performance.now() - t0);
+            collectedRows.push({
+              imageName: imgItem.name,
+              modelId: model.id,
+              metrics: {
+                psnr: 0,
+                ssim: 0,
+                mse: 1e9,
+                ber: 1,
+                recovery: false,
+                payloadBits: 0,
+                bpp: 0,
+                lsbChangePct: 100,
+                encodeMs: duration,
+                decodeMs: 0,
+                distortion: 1e9,
+              },
+              recovered: "",
+              error: err instanceof Error ? err.message : "Encoding failure",
+              durationMs: duration,
+            });
+          }
+        }
+      }
+      setStegoOutputs(newStegoOutputs);
+      setBench(collectedRows);
+    })();
+  }, [bench.length, isRunning, payloadText, passphrase, setBench]);
 
   const activeImageNames = useMemo(() => {
     return [...new Set(activeRows.map((r) => r.imageName))];
@@ -597,16 +688,16 @@ export function BatchLabPage() {
 
   const bestModelName = useMemo(() => {
     if (overallBestModelStat) return overallBestModelStat.model.name;
-    if (!bestModelAnalysis) return "ARES-EMD-OPAP-INN (Proposed)";
+    if (!bestModelAnalysis) return "Pending Benchmark Evaluation";
     return modelNamesMap[bestModelAnalysis.bestModelId] || bestModelAnalysis.bestModelId;
   }, [overallBestModelStat, bestModelAnalysis, modelNamesMap]);
 
   const bestModelRank = useMemo(() => {
-    if (bestModelAnalysis && overallBestModelStat?.model.id === bestModelAnalysis.bestModelId) {
+    if (bestModelAnalysis) {
       return bestModelAnalysis.bestModelRank;
     }
     return 1.0;
-  }, [bestModelAnalysis, overallBestModelStat]);
+  }, [bestModelAnalysis]);
 
   // Per-image comparison table rows for currently selected image
   const currentImageRows = useMemo(() => {
@@ -801,9 +892,7 @@ export function BatchLabPage() {
                   <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 font-mono">
                     {isRunning
                       ? "Live Best Model (Updating Over Benchmark Run)"
-                      : hasLiveResults
-                      ? "Best Model Over Live Benchmark Run"
-                      : "Best Model Over Reference Benchmark"}
+                      : "Best Model Over Live Benchmark Run"}
                   </span>
                   <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 font-mono">
                     Zero False Positives · 100% Bit-Exact Recovery Verified
@@ -953,8 +1042,8 @@ export function BatchLabPage() {
             {isRunning
               ? "Benchmark in progress"
               : hasLiveResults
-              ? `Live Batch (${bench.length} rows collected)`
-              : "Showing Reference Benchmark Suite"}
+              ? `Live Empirical Batch (${bench.length} rows collected)`
+              : "Initializing Live Empirical Batch..."}
           </span>
         </div>
       </div>
@@ -1085,9 +1174,7 @@ export function BatchLabPage() {
               <div className="grid gap-2.5 sm:grid-cols-2">
                 {MODELS.map((m) => {
                   const selected = selectedModelIds.includes(m.id);
-                  const isPrimaryAres = m.id === "ares_emd_opap";
-                  const isHybridAres = m.id === "ares_hybrid_inn";
-                  const isAres = isPrimaryAres || isHybridAres;
+                  const isBestMeasured = overallBestModelStat?.model.id === m.id;
                   return (
                     <div
                       key={m.id}
@@ -1095,10 +1182,8 @@ export function BatchLabPage() {
                       className={cn(
                         "flex cursor-pointer flex-col justify-between rounded-lg border p-3 text-left transition-all",
                         selected
-                          ? isPrimaryAres
-                            ? "border-primary/60 bg-primary/5 shadow-xs ring-1 ring-primary/30"
-                            : isHybridAres
-                            ? "border-emerald-500/50 bg-emerald-500/5 shadow-xs ring-1 ring-emerald-500/30"
+                          ? isBestMeasured
+                            ? "border-amber-500/60 bg-amber-500/5 shadow-xs ring-1 ring-amber-500/30"
                             : "border-border bg-card shadow-xs"
                           : "border-border/50 bg-muted/30 opacity-60",
                       )}
@@ -1118,14 +1203,12 @@ export function BatchLabPage() {
                         <span
                           className={cn(
                             "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
-                            isPrimaryAres
-                              ? "bg-primary text-primary-foreground"
-                              : isHybridAres
-                              ? "bg-emerald-500/20 text-emerald-600"
+                            isBestMeasured
+                              ? "bg-amber-500/20 text-amber-700 dark:text-amber-400"
                               : "bg-muted text-muted-foreground",
                           )}
                         >
-                          {isPrimaryAres ? "Recommended" : isHybridAres ? "Hybrid INN-CNN" : m.status}
+                          {isBestMeasured ? "#1 Best Measured" : m.status}
                         </span>
                       </div>
                       <p className="mt-1 text-[11px] font-medium text-foreground line-clamp-1">
@@ -1136,13 +1219,7 @@ export function BatchLabPage() {
                       </p>
                       <div className="mt-2 flex items-center justify-between border-t border-border/40 pt-1.5 text-[10px] font-mono text-muted-foreground">
                         <span>method: {m.methodKey}</span>
-                        {isPrimaryAres ? (
-                          <span className="text-primary font-semibold">INN 3-Pixel (M=7)</span>
-                        ) : isHybridAres ? (
-                          <span className="text-emerald-600 font-semibold">INN 2-Pixel (M=5)</span>
-                        ) : m.usesHamming ? (
-                          <span className="text-primary font-medium">Hamming(7,3)</span>
-                        ) : null}
+                        <span>{m.usesInn ? "INN + EMD + OPAP" : m.usesEmd ? "EMD + OPAP" : m.usesHamming ? "Hamming(7,3)" : "LSB"}</span>
                       </div>
                     </div>
                   );
@@ -1564,9 +1641,6 @@ export function BatchLabPage() {
                         selectedModelIds.includes(m.id),
                     ).map((m) => {
                       const row = currentImageRows.find((r) => r.modelId === m.id);
-                      const isPrimaryAres = m.id === "ares_emd_opap";
-                      const isHybridAres = m.id === "ares_hybrid_inn";
-                      const isAres = isPrimaryAres || isHybridAres;
                       const isWinner = currentImageWinner?.modelId === m.id;
 
                       if (!row) {
@@ -1590,7 +1664,7 @@ export function BatchLabPage() {
                           key={m.id}
                           className={cn(
                             "transition-colors hover:bg-muted/40",
-                            isWinner ? "bg-amber-500/5 font-semibold" : isAres ? "bg-primary/5" : "",
+                            isWinner ? "bg-amber-500/5 font-semibold" : "",
                           )}
                         >
                           <td className="px-4 py-3 font-sans font-medium text-foreground flex items-center gap-1.5">
@@ -1599,16 +1673,6 @@ export function BatchLabPage() {
                             {isWinner && (
                               <span className="rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 px-1.5 py-0.2 text-[9px] font-bold">
                                 BEST
-                              </span>
-                            )}
-                            {isPrimaryAres && (
-                              <span className="rounded bg-primary/20 text-primary px-1 py-0.2 text-[9px] font-semibold">
-                                RECOMMENDED
-                              </span>
-                            )}
-                            {isHybridAres && (
-                              <span className="rounded bg-emerald-500/20 text-emerald-600 px-1 py-0.2 text-[9px] font-semibold">
-                                HYBRID
                               </span>
                             )}
                           </td>
@@ -2314,16 +2378,13 @@ export function BatchLabPage() {
                 <tbody className="divide-y divide-border/60 font-mono text-[11px]">
                   {aggregatedStats.map((item) => {
                     const isWinner = item.rank === 1;
-                    const isPrimaryAres = item.model.id === "ares_emd_opap";
-                    const isHybridAres = item.model.id === "ares_hybrid_inn";
-                    const isAres = isPrimaryAres || isHybridAres;
 
                     return (
                       <tr
                         key={item.model.id}
                         className={cn(
                           "transition-colors hover:bg-muted/40",
-                          isWinner ? "bg-amber-500/5 font-semibold" : isAres ? "bg-primary/5" : "",
+                          isWinner ? "bg-amber-500/5 font-semibold" : "",
                         )}
                       >
                         <td className="px-4 py-3">
@@ -2347,16 +2408,6 @@ export function BatchLabPage() {
                           {isWinner && (
                             <span className="rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 px-1.5 py-0.2 text-[9px] font-bold">
                               #1 BEST RESULT
-                            </span>
-                          )}
-                          {isPrimaryAres && (
-                            <span className="rounded bg-primary/20 text-primary px-1 py-0.2 text-[9px] font-semibold">
-                              RECOMMENDED
-                            </span>
-                          )}
-                          {isHybridAres && (
-                            <span className="rounded bg-emerald-500/20 text-emerald-600 px-1 py-0.2 text-[9px] font-semibold">
-                              HYBRID INN-CNN
                             </span>
                           )}
                         </td>
