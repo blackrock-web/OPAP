@@ -1,0 +1,6 @@
+{
+  "name": "ARES-EMD-OPAP Stego Lab",
+  "description": "CNN-Assisted Adaptive EMD-OPAP Steganography with Distortion Optimization for Secure Image Data Hiding. Comprehensive benchmark, ablation, and extraction laboratory.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
