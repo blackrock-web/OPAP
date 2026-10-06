@@ -54,7 +54,7 @@ export function CDDiagram({
         short: def?.short || id,
         name: def?.name || id,
         paper: def?.paper || "",
-        isAres: id === "ares_hybrid_inn",
+        isAres: id === "ares_emd_opap" || id === "ares_hybrid_inn",
         rank: avgRanks[index] ?? (index + 1),
       };
     })

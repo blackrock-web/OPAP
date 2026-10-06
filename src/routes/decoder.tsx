@@ -40,8 +40,8 @@ type ModelProbeResult = {
 function DecoderPage() {
   const session = useSession();
 
-  // Model selection
-  const [selectedModelId, setSelectedModelId] = useState<string>("ares_hybrid_inn");
+  // Model selection (default to recommended ARES-EMD-OPAP-INN)
+  const [selectedModelId, setSelectedModelId] = useState<string>("ares_emd_opap");
 
   // User inputs (clean, no automatic copy-pasting)
   const [password, setPassword] = useState<string>("");
@@ -305,6 +305,8 @@ function DecoderPage() {
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 w-full">
             {MODELS.map((m) => {
               const isSelected = selectedModelId === m.id;
+              const isPrimaryAres = m.id === "ares_emd_opap";
+              const isHybridAres = m.id === "ares_hybrid_inn";
               return (
                 <button
                   key={m.id}
@@ -323,13 +325,15 @@ function DecoderPage() {
                     </span>
                     <span
                       className={cn(
-                        "rounded px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wider",
-                        m.id === "ares_hybrid_inn"
-                          ? "bg-primary/20 text-primary"
+                        "rounded px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wider shrink-0",
+                        isPrimaryAres
+                          ? "bg-primary text-primary-foreground"
+                          : isHybridAres
+                          ? "bg-blue-500/20 text-blue-700 dark:text-blue-300"
                           : "bg-muted text-muted-foreground",
                       )}
                     >
-                      {m.short}
+                      {isPrimaryAres ? "RECOMMENDED" : isHybridAres ? "HYBRID INN-CNN" : m.short}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-muted-foreground line-clamp-2">
@@ -337,7 +341,15 @@ function DecoderPage() {
                   </p>
                   <div className="mt-2.5 flex items-center justify-between border-t border-border/40 pt-1.5 font-mono text-[10px] text-muted-foreground">
                     <span>Key: {m.methodKey}</span>
-                    <span>{m.usesHamming ? "Hamming(7,3)" : "LSB Keyed"}</span>
+                    <span>
+                      {m.usesInn
+                        ? "INN + EMD + OPAP"
+                        : m.usesEmd
+                        ? "EMD + OPAP"
+                        : m.usesHamming
+                        ? "Hamming(7,3)"
+                        : "LSB Keyed"}
+                    </span>
                   </div>
                 </button>
               );
@@ -529,25 +541,37 @@ function DecoderPage() {
             <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs space-y-1.5">
               <div className="flex items-center justify-between font-mono text-[11px]">
                 <span className="text-muted-foreground">Carrier Channel:</span>
-                <span className="font-semibold text-foreground">Blue (Channel Index 2)</span>
+                <span className="font-semibold text-foreground">Blue (Channel Index 2, Invariant R &amp; G)</span>
               </div>
               <div className="flex items-center justify-between font-mono text-[11px]">
                 <span className="text-muted-foreground">Positional Mapping:</span>
                 <span className="font-semibold text-foreground">
-                  {selectedModel.usesAdaptive
-                    ? "Adaptive Saliency + Keyed HKDF Mask"
+                  {selectedModel.usesInn
+                    ? "INN Reversible Wavelet + CNN Attention Cost Map"
+                    : selectedModel.usesAdaptiveCost || selectedModel.usesAdaptive
+                    ? "CNN Adaptive Saliency + Keyed Permutation"
                     : "Password-Keyed Fisher-Yates Permutation"}
                 </span>
               </div>
               <div className="flex items-center justify-between font-mono text-[11px]">
                 <span className="text-muted-foreground">Coding Scheme:</span>
                 <span className="font-semibold text-foreground">
-                  {selectedModel.usesHamming ? "Hamming (7,3) ±1 Matching" : "Standard Keyed LSB"}
+                  {selectedModel.usesInn
+                    ? `INN-Coupled EMD + OPAP (${selectedModel.radixScheme ?? "bits6"})`
+                    : selectedModel.usesEmd
+                    ? "Generalized EMD + OPAP"
+                    : selectedModel.usesHamming
+                    ? "Hamming (7,3) ±1 Matching"
+                    : "Standard Keyed LSB"}
                 </span>
               </div>
               <div className="flex items-center justify-between font-mono text-[11px]">
                 <span className="text-muted-foreground">Cryptographic Verification:</span>
-                <span className="font-semibold text-foreground">Magic Checksum (STG1) + HKDF Keystream</span>
+                <span className="font-semibold text-foreground">
+                  {selectedModel.usesAesGcm
+                    ? "PBKDF2 + AES-256-GCM AEAD (Zero False Positives)"
+                    : "Magic Header + SHA-256 Keyed MAC"}
+                </span>
               </div>
             </div>
           </section>

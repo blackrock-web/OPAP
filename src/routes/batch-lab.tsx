@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { MODELS, encodeWithModel, type ModelDef } from "@/lib/stego/models";
+import { MODELS, BENCHMARK_MODELS, encodeWithModel, type ModelDef } from "@/lib/stego/models";
 import {
   fileToImage,
   imageToDataUrl,
@@ -69,9 +69,9 @@ export type BatchImageItem = {
 export function BatchLabPage() {
   const { bench, setBench, settings, addBatchRun } = useSession();
 
-  // Configuration state
+  // Configuration state (defaults to the 7 primary benchmark models: ARES-EMD-OPAP-INN, ARES-Hybrid-INN-CNN, and 5 baselines)
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>(
-    MODELS.map((m) => m.id),
+    BENCHMARK_MODELS.map((m) => m.id),
   );
   const [payloadText, setPayloadText] = useState(settings.defaultPayload);
   const [passphrase, setPassphrase] = useState(settings.defaultPassphrase);
@@ -120,8 +120,8 @@ export function BatchLabPage() {
   const [exportFormat, setExportFormat] = useState<"apa" | "latex" | "csv" | "json">("apa");
   const [copiedType, setCopiedType] = useState<string | null>(null);
 
-  // Visual inspector state
-  const [inspectorModelId, setInspectorModelId] = useState<string>("ares_hybrid_inn");
+  // Visual inspector state (default to recommended ARES-EMD-OPAP-INN)
+  const [inspectorModelId, setInspectorModelId] = useState<string>("ares_emd_opap");
   const [showDifferenceMap, setShowDifferenceMap] = useState<boolean>(false);
 
   // Initialize selectedImageTab once images are present
@@ -387,13 +387,14 @@ export function BatchLabPage() {
           .reduce((acc, r) => acc + r.metrics.ssim, 0) /
         (collectedRows.filter((r) => r.metrics.recovery).length || 1);
 
-      // Find top winning model
+      // Find top winning model among verified 100%-recovery runs (zero false positives)
       const modelPsnrMap: Record<string, number[]> = {};
       for (const r of collectedRows) {
+        if (!r.metrics.recovery) continue;
         if (!modelPsnrMap[r.modelId]) modelPsnrMap[r.modelId] = [];
         modelPsnrMap[r.modelId]!.push(r.metrics.psnr);
       }
-      let bestModel = modelsToRun[0]?.id || "ares_hybrid_inn";
+      let bestModel = modelsToRun[0]?.id || "ares_emd_opap";
       let maxAvg = -1;
       for (const [mid, vals] of Object.entries(modelPsnrMap)) {
         const mean = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
@@ -441,7 +442,7 @@ export function BatchLabPage() {
 
   const activeModelIds = useMemo(() => {
     const ids = [...new Set(activeRows.map((r) => r.modelId))];
-    return ids.length > 0 ? ids : MODELS.map((m) => m.id);
+    return ids.length > 0 ? ids : BENCHMARK_MODELS.map((m) => m.id);
   }, [activeRows]);
 
   const activeMetricDef =
@@ -483,16 +484,7 @@ export function BatchLabPage() {
     return getBestModelAnalysis(statsResult, rankTable);
   }, [statsResult, rankTable]);
 
-  const bestModelName = useMemo(() => {
-    if (!bestModelAnalysis) return "ARES-Hybrid-INN";
-    return modelNamesMap[bestModelAnalysis.bestModelId] || bestModelAnalysis.bestModelId;
-  }, [bestModelAnalysis, modelNamesMap]);
-
-  const bestModelRank = useMemo(() => {
-    return bestModelAnalysis ? bestModelAnalysis.bestModelRank : 1.0;
-  }, [bestModelAnalysis]);
-
-  // Aggregated Summary Across Images
+  // Aggregated Summary Across Images (Zero False Positives: ranks by selectedMetric among verified recovery runs)
   const aggregatedStats = useMemo(() => {
     const modelStats: {
       model: ModelDef;
@@ -503,25 +495,33 @@ export function BatchLabPage() {
       mseAvg: number;
       berAvg: number;
       bppAvg: number;
+      distortionAvg: number;
       encodeAvg: number;
       decodeAvg: number;
+      selectedMetricAvg: number;
       passCount: number;
+      totalCount: number;
       winCount: number;
       rank: number;
     }[] = [];
 
     for (const model of MODELS) {
-      const rows = activeRows.filter((r) => r.modelId === model.id);
-      if (rows.length === 0) continue;
+      const allModelRows = activeRows.filter((r) => r.modelId === model.id);
+      if (allModelRows.length === 0) continue;
 
-      const psnrs = rows.map((r) => r.metrics.psnr);
-      const ssims = rows.map((r) => r.metrics.ssim);
-      const mses = rows.map((r) => r.metrics.mse);
-      const bers = rows.map((r) => r.metrics.ber);
-      const bpps = rows.map((r) => r.metrics.bpp);
-      const encodes = rows.map((r) => r.metrics.encodeMs);
-      const decodes = rows.map((r) => r.metrics.decodeMs);
-      const passes = rows.filter((r) => r.metrics.recovery).length;
+      const validRows = allModelRows.filter((r) => r.metrics.recovery);
+      const sourceRows = validRows.length > 0 ? validRows : allModelRows;
+
+      const psnrs = sourceRows.map((r) => r.metrics.psnr);
+      const ssims = sourceRows.map((r) => r.metrics.ssim);
+      const mses = sourceRows.map((r) => r.metrics.mse);
+      const bers = allModelRows.map((r) => r.metrics.ber);
+      const bpps = sourceRows.map((r) => r.metrics.bpp);
+      const distortions = sourceRows.map((r) => r.metrics.distortion);
+      const encodes = sourceRows.map((r) => r.metrics.encodeMs);
+      const decodes = sourceRows.map((r) => r.metrics.decodeMs);
+      const selectedVals = sourceRows.map((r) => r.metrics[selectedMetric] as number);
+      const passes = validRows.length;
 
       const calcMean = (arr: number[]) =>
         arr.reduce((a, b) => a + b, 0) / (arr.length || 1);
@@ -543,22 +543,28 @@ export function BatchLabPage() {
         mseAvg: calcMean(mses),
         berAvg: calcMean(bers),
         bppAvg: calcMean(bpps),
+        distortionAvg: calcMean(distortions),
         encodeAvg: calcMean(encodes),
         decodeAvg: calcMean(decodes),
+        selectedMetricAvg: calcMean(selectedVals),
         passCount: passes,
+        totalCount: allModelRows.length,
         winCount: 0,
         rank: 0,
       });
     }
 
-    // Calculate win count per image
+    // Calculate win count per image strictly among verified 100%-recovery runs (no false positives)
     for (const imgName of activeImageNames) {
-      let maxScore = -1e9;
+      let bestScore = activeMetricDef.higherIsBetter ? -Infinity : Infinity;
       let winningModelId = "";
-      for (const row of activeRows.filter((r) => r.imageName === imgName)) {
+      for (const row of activeRows.filter((r) => r.imageName === imgName && r.metrics.recovery)) {
         const score = row.metrics[selectedMetric] as number;
-        if (activeMetricDef.higherIsBetter ? score > maxScore : score < maxScore) {
-          maxScore = score;
+        const isBetter = activeMetricDef.higherIsBetter
+          ? score > bestScore
+          : score < bestScore;
+        if (isBetter) {
+          bestScore = score;
           winningModelId = row.modelId;
         }
       }
@@ -566,10 +572,18 @@ export function BatchLabPage() {
       if (entry) entry.winCount++;
     }
 
-    // Sort models by selected metric
-    modelStats.sort((a, b) =>
-      activeMetricDef.higherIsBetter ? b.psnrAvg - a.psnrAvg : a.psnrAvg - b.psnrAvg,
-    );
+    // Sort models by verified recovery first, then by selectedMetric average, then by PSNR average tie-breaker
+    modelStats.sort((a, b) => {
+      if ((a.passCount > 0) !== (b.passCount > 0)) {
+        return a.passCount > 0 ? -1 : 1;
+      }
+      if (Math.abs(a.selectedMetricAvg - b.selectedMetricAvg) > 1e-9) {
+        return activeMetricDef.higherIsBetter
+          ? b.selectedMetricAvg - a.selectedMetricAvg
+          : a.selectedMetricAvg - b.selectedMetricAvg;
+      }
+      return b.psnrAvg - a.psnrAvg;
+    });
     modelStats.forEach((m, idx) => {
       m.rank = idx + 1;
     });
@@ -577,20 +591,42 @@ export function BatchLabPage() {
     return modelStats;
   }, [activeRows, activeImageNames, selectedMetric, activeMetricDef]);
 
+  const overallBestModelStat = useMemo(() => {
+    return aggregatedStats.find((s) => s.passCount > 0) ?? aggregatedStats[0] ?? null;
+  }, [aggregatedStats]);
+
+  const bestModelName = useMemo(() => {
+    if (overallBestModelStat) return overallBestModelStat.model.name;
+    if (!bestModelAnalysis) return "ARES-EMD-OPAP-INN (Proposed)";
+    return modelNamesMap[bestModelAnalysis.bestModelId] || bestModelAnalysis.bestModelId;
+  }, [overallBestModelStat, bestModelAnalysis, modelNamesMap]);
+
+  const bestModelRank = useMemo(() => {
+    if (bestModelAnalysis && overallBestModelStat?.model.id === bestModelAnalysis.bestModelId) {
+      return bestModelAnalysis.bestModelRank;
+    }
+    return 1.0;
+  }, [bestModelAnalysis, overallBestModelStat]);
+
   // Per-image comparison table rows for currently selected image
   const currentImageRows = useMemo(() => {
     if (!selectedImageTab) return [];
     return activeRows.filter((r) => r.imageName === selectedImageTab);
   }, [activeRows, selectedImageTab]);
 
-  // Winner for current image
+  // Winner for current image (strictly requires 100% bit-exact recovery — zero false positives)
   const currentImageWinner = useMemo(() => {
-    if (currentImageRows.length === 0) return null;
-    let best = currentImageRows[0]!;
-    for (const r of currentImageRows) {
+    const validRows = currentImageRows.filter((r) => r.metrics.recovery);
+    if (validRows.length === 0) return null;
+    let best = validRows[0]!;
+    for (const r of validRows) {
       const bestVal = best.metrics[selectedMetric] as number;
       const currentVal = r.metrics[selectedMetric] as number;
-      if (activeMetricDef.higherIsBetter ? currentVal > bestVal : currentVal < bestVal) {
+      if (Math.abs(currentVal - bestVal) > 1e-9) {
+        if (activeMetricDef.higherIsBetter ? currentVal > bestVal : currentVal < bestVal) {
+          best = r;
+        }
+      } else if (r.metrics.psnr > best.metrics.psnr) {
         best = r;
       }
     }
@@ -724,9 +760,9 @@ export function BatchLabPage() {
   return (
     <AppShell>
       <PageHeader
-        kicker="Core Research Module"
+        kicker="ARES-EMD-OPAP-INN & Hybrid INN-CNN Benchmark Suite"
         title="Batch Lab Benchmarking"
-        description="Comprehensive multi-image laboratory for rigorous steganographic benchmarking. Every image is independently processed through all 6 models with identical cryptographic payload and passphrase, generating per-image comparison tables and automated statistical significance analysis (Friedman, Kendall’s W, Nemenyi)."
+        description="Comprehensive multi-image laboratory evaluating ARES-EMD-OPAP-INN, ARES-Hybrid-INN-CNN, and 5 published baselines under identical cryptographic payload and passphrase. Eliminates false positives with strict 100% bit-exact recovery verification and dynamically ranks whichever model gets the best empirical result."
         actions={
           <div className="flex items-center gap-2">
             {!isRunning ? (
@@ -751,6 +787,86 @@ export function BatchLabPage() {
           </div>
         }
       />
+
+      {/* LIVE BEST MODEL OVER BENCHMARK RUNNING BANNER */}
+      {overallBestModelStat && (
+        <section className="mb-6 rounded-xl border-2 border-amber-500/40 bg-gradient-to-r from-amber-500/10 via-card to-emerald-500/10 p-4 shadow-xs">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-3.5">
+              <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-500 text-white shadow-sm">
+                <Trophy className="size-6 fill-current" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 font-mono">
+                    {isRunning
+                      ? "Live Best Model (Updating Over Benchmark Run)"
+                      : hasLiveResults
+                      ? "Best Model Over Live Benchmark Run"
+                      : "Best Model Over Reference Benchmark"}
+                  </span>
+                  <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-600 font-mono">
+                    Zero False Positives · 100% Bit-Exact Recovery Verified
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-baseline gap-2.5">
+                  <h2 className="font-display text-lg font-bold text-ink sm:text-xl">
+                    {overallBestModelStat.model.name}
+                  </h2>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    ({overallBestModelStat.model.paper})
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Ranked strictly by empirical{" "}
+                  <span className="font-semibold text-foreground">{activeMetricDef.name}</span> across{" "}
+                  <span className="font-mono font-semibold text-foreground">
+                    {activeImageNames.length}
+                  </span>{" "}
+                  cover images ({overallBestModelStat.winCount}/{activeImageNames.length} image wins).
+                  {aggregatedStats[1] && (
+                    <span className="ml-1.5 text-muted-foreground">
+                      Runner-up:{" "}
+                      <span className="font-semibold text-foreground">
+                        {aggregatedStats[1].model.short}
+                      </span>{" "}
+                      ({aggregatedStats[1].psnrAvg.toFixed(2)} dB, SSIM{" "}
+                      {aggregatedStats[1].ssimAvg.toFixed(4)}).
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 font-mono text-xs">
+              <div className="rounded-lg border border-border bg-card/90 px-3 py-1.5 text-center">
+                <span className="text-[10px] uppercase text-muted-foreground block">Mean PSNR</span>
+                <span className="text-sm font-bold text-emerald-600">
+                  {overallBestModelStat.psnrAvg.toFixed(2)} dB
+                </span>
+              </div>
+              <div className="rounded-lg border border-border bg-card/90 px-3 py-1.5 text-center">
+                <span className="text-[10px] uppercase text-muted-foreground block">Mean SSIM</span>
+                <span className="text-sm font-bold text-foreground">
+                  {overallBestModelStat.ssimAvg.toFixed(4)}
+                </span>
+              </div>
+              <div className="rounded-lg border border-border bg-card/90 px-3 py-1.5 text-center">
+                <span className="text-[10px] uppercase text-muted-foreground block">Mean MSE</span>
+                <span className="text-sm font-bold text-foreground">
+                  {overallBestModelStat.mseAvg.toFixed(4)}
+                </span>
+              </div>
+              <div className="rounded-lg border border-border bg-card/90 px-3 py-1.5 text-center">
+                <span className="text-[10px] uppercase text-muted-foreground block">Image Wins</span>
+                <span className="text-sm font-bold text-primary">
+                  {overallBestModelStat.winCount} / {activeImageNames.length}
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Navigation Tabs within Batch Lab */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
@@ -935,27 +1051,33 @@ export function BatchLabPage() {
           <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
             {/* Left: Model Selection Matrix */}
             <div className="rounded-xl border border-border bg-card p-5">
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="font-display text-base font-semibold text-ink">
-                    Benchmark Models
+                    Benchmark Models (ARES-EMD-OPAP-INN & Hybrid INN-CNN)
                   </h3>
                   <p className="text-xs text-muted-foreground">
-                    All 6 models are evaluated under identical conditions.
+                    Select models to evaluate under identical cryptographic payload & cover conditions.
                   </p>
                 </div>
-                <div className="flex items-center gap-1.5 text-xs">
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <button
+                    onClick={() => setSelectedModelIds(BENCHMARK_MODELS.map((m) => m.id))}
+                    className="rounded bg-primary/10 px-2 py-1 text-primary hover:bg-primary/20 font-semibold text-[11px]"
+                  >
+                    Primary (7)
+                  </button>
+                  <button
+                    onClick={() => setSelectedModelIds(["ares_emd_opap", "ares_hybrid_inn"])}
+                    className="rounded bg-emerald-500/10 px-2 py-1 text-emerald-600 hover:bg-emerald-500/20 font-semibold text-[11px]"
+                  >
+                    ARES INN + Hybrid Only
+                  </button>
                   <button
                     onClick={() => setSelectedModelIds(MODELS.map((m) => m.id))}
                     className="rounded bg-muted px-2 py-1 text-muted-foreground hover:text-foreground font-medium text-[11px]"
                   >
-                    Select All (6)
-                  </button>
-                  <button
-                    onClick={() => setSelectedModelIds(["ares_hybrid_inn"])}
-                    className="rounded bg-muted px-2 py-1 text-muted-foreground hover:text-foreground font-medium text-[11px]"
-                  >
-                    ARES Only
+                    All + Ablation ({MODELS.length})
                   </button>
                 </div>
               </div>
@@ -963,7 +1085,9 @@ export function BatchLabPage() {
               <div className="grid gap-2.5 sm:grid-cols-2">
                 {MODELS.map((m) => {
                   const selected = selectedModelIds.includes(m.id);
-                  const isAres = m.id === "ares_hybrid_inn";
+                  const isPrimaryAres = m.id === "ares_emd_opap";
+                  const isHybridAres = m.id === "ares_hybrid_inn";
+                  const isAres = isPrimaryAres || isHybridAres;
                   return (
                     <div
                       key={m.id}
@@ -971,8 +1095,10 @@ export function BatchLabPage() {
                       className={cn(
                         "flex cursor-pointer flex-col justify-between rounded-lg border p-3 text-left transition-all",
                         selected
-                          ? isAres
+                          ? isPrimaryAres
                             ? "border-primary/60 bg-primary/5 shadow-xs ring-1 ring-primary/30"
+                            : isHybridAres
+                            ? "border-emerald-500/50 bg-emerald-500/5 shadow-xs ring-1 ring-emerald-500/30"
                             : "border-border bg-card shadow-xs"
                           : "border-border/50 bg-muted/30 opacity-60",
                       )}
@@ -992,12 +1118,14 @@ export function BatchLabPage() {
                         <span
                           className={cn(
                             "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
-                            isAres
-                              ? "bg-primary/20 text-primary"
+                            isPrimaryAres
+                              ? "bg-primary text-primary-foreground"
+                              : isHybridAres
+                              ? "bg-emerald-500/20 text-emerald-600"
                               : "bg-muted text-muted-foreground",
                           )}
                         >
-                          {m.status}
+                          {isPrimaryAres ? "Recommended" : isHybridAres ? "Hybrid INN-CNN" : m.status}
                         </span>
                       </div>
                       <p className="mt-1 text-[11px] font-medium text-foreground line-clamp-1">
@@ -1008,9 +1136,13 @@ export function BatchLabPage() {
                       </p>
                       <div className="mt-2 flex items-center justify-between border-t border-border/40 pt-1.5 text-[10px] font-mono text-muted-foreground">
                         <span>method: {m.methodKey}</span>
-                        {m.usesHamming && (
+                        {isPrimaryAres ? (
+                          <span className="text-primary font-semibold">INN 3-Pixel (M=7)</span>
+                        ) : isHybridAres ? (
+                          <span className="text-emerald-600 font-semibold">INN 2-Pixel (M=5)</span>
+                        ) : m.usesHamming ? (
                           <span className="text-primary font-medium">Hamming(7,3)</span>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   );
@@ -1426,9 +1558,15 @@ export function BatchLabPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60 font-mono text-[11px]">
-                    {MODELS.map((m) => {
+                    {MODELS.filter(
+                      (m) =>
+                        currentImageRows.some((r) => r.modelId === m.id) ||
+                        selectedModelIds.includes(m.id),
+                    ).map((m) => {
                       const row = currentImageRows.find((r) => r.modelId === m.id);
-                      const isAres = m.id === "ares_hybrid_inn";
+                      const isPrimaryAres = m.id === "ares_emd_opap";
+                      const isHybridAres = m.id === "ares_hybrid_inn";
+                      const isAres = isPrimaryAres || isHybridAres;
                       const isWinner = currentImageWinner?.modelId === m.id;
 
                       if (!row) {
@@ -1458,9 +1596,19 @@ export function BatchLabPage() {
                           <td className="px-4 py-3 font-sans font-medium text-foreground flex items-center gap-1.5">
                             {isWinner && <Trophy className="size-3.5 text-amber-500 shrink-0" />}
                             <span>{m.name}</span>
-                            {isAres && (
+                            {isWinner && (
+                              <span className="rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 px-1.5 py-0.2 text-[9px] font-bold">
+                                BEST
+                              </span>
+                            )}
+                            {isPrimaryAres && (
                               <span className="rounded bg-primary/20 text-primary px-1 py-0.2 text-[9px] font-semibold">
-                                PROPOSED
+                                RECOMMENDED
+                              </span>
+                            )}
+                            {isHybridAres && (
+                              <span className="rounded bg-emerald-500/20 text-emerald-600 px-1 py-0.2 text-[9px] font-semibold">
+                                HYBRID
                               </span>
                             )}
                           </td>
@@ -2070,13 +2218,22 @@ export function BatchLabPage() {
                     .filter((p) => {
                       if (filterMode === "sig") return p.significant;
                       if (filterMode === "ares")
-                        return p.a === "ares_hybrid_inn" || p.b === "ares_hybrid_inn";
+                        return (
+                          p.a === "ares_emd_opap" ||
+                          p.b === "ares_emd_opap" ||
+                          p.a === "ares_hybrid_inn" ||
+                          p.b === "ares_hybrid_inn"
+                        );
                       return true;
                     })
                     .map((p, idx) => {
                       const modelA = MODELS.find((m) => m.id === p.a)?.short ?? p.a;
                       const modelB = MODELS.find((m) => m.id === p.b)?.short ?? p.b;
-                      const isAresPair = p.a === "ares_hybrid_inn" || p.b === "ares_hybrid_inn";
+                      const isAresPair =
+                        p.a === "ares_emd_opap" ||
+                        p.b === "ares_emd_opap" ||
+                        p.a === "ares_hybrid_inn" ||
+                        p.b === "ares_hybrid_inn";
 
                       return (
                         <tr
@@ -2157,7 +2314,9 @@ export function BatchLabPage() {
                 <tbody className="divide-y divide-border/60 font-mono text-[11px]">
                   {aggregatedStats.map((item) => {
                     const isWinner = item.rank === 1;
-                    const isAres = item.model.id === "ares_hybrid_inn";
+                    const isPrimaryAres = item.model.id === "ares_emd_opap";
+                    const isHybridAres = item.model.id === "ares_hybrid_inn";
+                    const isAres = isPrimaryAres || isHybridAres;
 
                     return (
                       <tr
@@ -2185,9 +2344,19 @@ export function BatchLabPage() {
                         </td>
                         <td className="px-4 py-3 font-sans font-medium text-foreground flex items-center gap-1.5">
                           <span>{item.model.name}</span>
-                          {isAres && (
+                          {isWinner && (
+                            <span className="rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 px-1.5 py-0.2 text-[9px] font-bold">
+                              #1 BEST RESULT
+                            </span>
+                          )}
+                          {isPrimaryAres && (
                             <span className="rounded bg-primary/20 text-primary px-1 py-0.2 text-[9px] font-semibold">
-                              PROPOSED
+                              RECOMMENDED
+                            </span>
+                          )}
+                          {isHybridAres && (
+                            <span className="rounded bg-emerald-500/20 text-emerald-600 px-1 py-0.2 text-[9px] font-semibold">
+                              HYBRID INN-CNN
                             </span>
                           )}
                         </td>

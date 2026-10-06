@@ -30,8 +30,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                 AR
               </div>
               <div>
-                <p className="font-display text-base font-bold leading-tight text-ink">ARES-EMD-OPAP</p>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Adaptive Stego Lab</p>
+                <p className="font-display text-sm font-bold leading-tight text-ink">ARES-EMD-OPAP-INN</p>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">INN + Hybrid CNN Lab</p>
               </div>
             </div>
           </div>

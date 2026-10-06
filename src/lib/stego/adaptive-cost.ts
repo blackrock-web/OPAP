@@ -19,6 +19,7 @@ export type CostMapComponents = {
   laplacianMap: Float32Array;
   spatialAttentionMap: Float32Array;
   innFeatureMap: Float32Array;
+  innPhaseMap: Uint8Array;
   suitabilityMap: Float32Array;
   costMap: Float32Array;
 };
@@ -42,11 +43,11 @@ export const DEFAULT_ADAPTIVE_CONFIG: AdaptiveMaskConfig = {
   useLaplacian: true,
   useCnnAttention: true,
   useInnGuidance: true,
-  wVariance: 0.25,
-  wGradient: 0.20,
+  wVariance: 0.20,
+  wGradient: 0.15,
   wLaplacian: 0.15,
   wAttention: 0.25,
-  wInn: 0.15,
+  wInn: 0.25,
 };
 
 function normalizeMap(map: Float32Array): Float32Array {
@@ -204,13 +205,14 @@ export function computeCnnSpatialAttention(img: RgbImage): Float32Array {
 }
 
 /**
- * 5. INN-Derived Feature Guidance: high-frequency affine coupling response
+ * 5. INN-Derived Feature Guidance: 2-stage Invertible Neural Network (INN)
+ * reversible Haar wavelet decomposition + affine coupling block response
+ * (z1 = LL, z2 = [LH, HL, HH], y2 = z2 * exp(tanh(s(z1))) + t(z1), y1 = z1 + phi(y2))
  */
 export function computeInnGuidance(img: RgbImage): Float32Array {
   const { width: w, height: h } = img;
   const innMap = new Float32Array(w * h);
 
-  // Reversible affine coupling frequency decomposition proxy
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const p1 = getRgLuma(img, x, y);
@@ -218,16 +220,54 @@ export function computeInnGuidance(img: RgbImage): Float32Array {
       const p3 = getRgLuma(img, x, y + 1);
       const p4 = getRgLuma(img, x + 1, y + 1);
 
-      // Haar-style reversible 2x2 wavelet detail components: LH, HL, HH
+      // Stage 1: Reversible 2x2 Haar wavelet subbands
+      const ll = 0.25 * (p1 + p2 + p3 + p4);
       const lh = Math.abs(p1 - p2 + p3 - p4);
       const hl = Math.abs(p1 + p2 - p3 - p4);
       const hh = Math.abs(p1 - p2 - p3 + p4);
 
-      innMap[y * w + x] = (lh + hl + hh) / 3;
+      // Stage 2: Invertible Affine Coupling Block (s(z1), t(z1), phi(y2))
+      const z1Norm = (ll - 128.0) / 128.0;
+      const scaleS = Math.exp(0.35 * Math.tanh(z1Norm));
+      const shiftT = Math.abs(getRgLuma(img, x, y) - getRgLuma(img, x - 1, y - 1)) * 0.25;
+      const z2Energy = (lh + hl + 1.5 * hh) / 3.5;
+      const y2 = z2Energy * scaleS + shiftT;
+      const y1Coupled = Math.abs(z1Norm) * 12.0 + 0.85 * y2;
+
+      innMap[y * w + x] = y1Coupled;
     }
   }
 
   return normalizeMap(innMap);
+}
+
+/**
+ * Computes an invariant reversible INN coupling phase map from R and G channels.
+ * Because Blue channel (channel 2) carries the EMD digits, this map is 100% identical
+ * between cover and stego images, enabling zero-overhead INN syndrome coupling.
+ */
+export function computeInnPhaseMap(img: RgbImage): Uint8Array {
+  const { width: w, height: h, data } = img;
+  const phase = new Uint8Array(w * h);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4;
+      const r = data[idx]!;
+      const g = data[idx + 1]!;
+      const nx = x + 1 < w ? (y * w + (x + 1)) * 4 : idx;
+      const ny = y + 1 < h ? ((y + 1) * w + x) * 4 : idx;
+      const r2 = data[nx]!;
+      const g2 = data[ny + 1]!;
+
+      // Reversible integer lifting wavelet + affine coupling step on invariant (R, G)
+      const d1 = ((r - g) & 255) ^ ((r2 + g2) & 255);
+      const s1 = (r + ((g * 3) & 255) + ((d1 * 7) & 255)) & 255;
+      phase[y * w + x] = s1;
+    }
+  }
+
+  return phase;
 }
 
 /**
@@ -245,12 +285,13 @@ export function buildAdaptiveCostMap(
   const laplacianMap = config.useLaplacian ? computeLaplacian(img) : new Float32Array(n);
   const spatialAttentionMap = config.useCnnAttention ? computeCnnSpatialAttention(img) : new Float32Array(n);
   const innFeatureMap = config.useInnGuidance ? computeInnGuidance(img) : new Float32Array(n);
+  const innPhaseMap = config.useInnGuidance ? computeInnPhaseMap(img) : new Uint8Array(n);
 
-  const wv = config.useVariance ? (config.wVariance ?? 0.25) : 0;
-  const wg = config.useGradient ? (config.wGradient ?? 0.20) : 0;
+  const wv = config.useVariance ? (config.wVariance ?? 0.20) : 0;
+  const wg = config.useGradient ? (config.wGradient ?? 0.15) : 0;
   const wl = config.useLaplacian ? (config.wLaplacian ?? 0.15) : 0;
   const wa = config.useCnnAttention ? (config.wAttention ?? 0.25) : 0;
-  const wi = config.useInnGuidance ? (config.wInn ?? 0.15) : 0;
+  const wi = config.useInnGuidance ? (config.wInn ?? 0.25) : 0;
   const totalWeight = wv + wg + wl + wa + wi || 1.0;
 
   const suitabilityMap = new Float32Array(n);
@@ -275,8 +316,90 @@ export function buildAdaptiveCostMap(
     laplacianMap,
     spatialAttentionMap,
     innFeatureMap,
+    innPhaseMap,
     suitabilityMap,
     costMap,
+  };
+}
+
+/**
+ * Generates eligible EMD pixel groups of size `groupSize` ordered by lowest adaptive cost
+ * and paired with their invariant INN coupling phase.
+ */
+export async function getAdaptiveEmdGroups(
+  img: RgbImage,
+  password: string,
+  config: AdaptiveMaskConfig = DEFAULT_ADAPTIVE_CONFIG,
+  groupSize = 2,
+  channel: 0 | 1 | 2 = 2,
+): Promise<{
+  groups: number[][];
+  innPhases: number[];
+  components: CostMapComponents;
+  totalCapacityGroups: number;
+}> {
+  const { width: w, height: h } = img;
+  const components = buildAdaptiveCostMap(img, config);
+  const suitability = components.suitabilityMap;
+  const innPhaseMap = components.innPhaseMap;
+  const modulus = 2 * groupSize + 1;
+
+  type GroupCandidate = {
+    indices: number[];
+    innPhase: number;
+    cost: number;
+  };
+
+  const candidates: GroupCandidate[] = [];
+  const totalPixels = w * h;
+  const usableGroups = Math.floor(totalPixels / groupSize);
+
+  for (let g = 0; g < usableGroups; g++) {
+    const basePixel = g * groupSize;
+    const indices: number[] = [];
+    let suitSum = 0;
+    let phaseAcc = 0;
+
+    for (let k = 0; k < groupSize; k++) {
+      const pIdx = basePixel + k;
+      indices.push(pIdx * 4 + channel);
+      suitSum += suitability[pIdx]!;
+      phaseAcc = (phaseAcc + (k + 1) * innPhaseMap[pIdx]!) % modulus;
+    }
+
+    const avgSuitability = suitSum / groupSize;
+    const cost = 1.0 - avgSuitability;
+
+    candidates.push({
+      indices,
+      innPhase: config.useInnGuidance ? phaseAcc % modulus : 0,
+      cost,
+    });
+  }
+
+  const isGuided =
+    config.useVariance ||
+    config.useGradient ||
+    config.useLaplacian ||
+    config.useCnnAttention ||
+    config.useInnGuidance;
+
+  if (isGuided) {
+    // Sort candidates by cost ascending (lowest cost / highest texture & INN suitability first)
+    candidates.sort((a, b) => a.cost - b.cost);
+  }
+
+  // Apply deterministic keyed permutation to top 75% lowest cost candidates
+  const topCount = Math.floor(candidates.length * 0.75);
+  const head = await keyedShuffle(candidates.slice(0, topCount), `${password}|emd_head_${groupSize}`);
+  const tail = await keyedShuffle(candidates.slice(topCount), `${password}|emd_tail_${groupSize}`);
+  const ordered = head.concat(tail);
+
+  return {
+    groups: ordered.map((c) => c.indices),
+    innPhases: ordered.map((c) => c.innPhase),
+    components,
+    totalCapacityGroups: ordered.length,
   };
 }
 
@@ -294,51 +417,10 @@ export async function getAdaptiveEmdPairs(
   components: CostMapComponents;
   totalCapacityGroups: number;
 }> {
-  const { width: w, height: h } = img;
-  const components = buildAdaptiveCostMap(img, config);
-  const suitability = components.suitabilityMap;
-
-  // Form pixel pairs along scanlines (adjacent horizontal pairs)
-  type PairCandidate = {
-    idx1: number;
-    idx2: number;
-    cost: number;
-  };
-
-  const candidates: PairCandidate[] = [];
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w - 1; x += 2) {
-      const p1 = y * w + x;
-      const p2 = y * w + (x + 1);
-
-      // Pixel byte indices in RGBA buffer for designated channel
-      const byteIdx1 = p1 * 4 + channel;
-      const byteIdx2 = p2 * 4 + channel;
-
-      // Group cost = 1 - average suitability
-      const avgSuitability = 0.5 * (suitability[p1]! + suitability[p2]!);
-      const cost = 1.0 - avgSuitability;
-
-      candidates.push({ idx1: byteIdx1, idx2: byteIdx2, cost });
-    }
-  }
-
-  // Sort candidates by cost ascending (lowest cost / highest texture first)
-  candidates.sort((a, b) => a.cost - b.cost);
-
-  // Apply deterministic keyed permutation to top 75% lowest cost candidates
-  // to prevent spatial clustering attacks while preserving lowest-cost priority
-  const topCount = Math.floor(candidates.length * 0.75);
-  const head = await keyedShuffle(candidates.slice(0, topCount), password + "|emd_head");
-  const tail = await keyedShuffle(candidates.slice(topCount), password + "|emd_tail");
-  const orderedCandidates = head.concat(tail);
-
-  const pairs: [number, number][] = orderedCandidates.map((c) => [c.idx1, c.idx2]);
-
+  const res = await getAdaptiveEmdGroups(img, password, config, 2, channel);
   return {
-    pairs,
-    components,
-    totalCapacityGroups: pairs.length,
+    pairs: res.groups.map((g) => [g[0]!, g[1]!]),
+    components: res.components,
+    totalCapacityGroups: res.totalCapacityGroups,
   };
 }

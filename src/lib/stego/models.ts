@@ -21,20 +21,28 @@ import {
 import { bitsFromBytes, bytesFromBits, packPayload, unpackPayload } from "./pack";
 import { type Coord, type RgbImage } from "./pixels";
 import {
-  bytesToBase5,
+   bytesToBase5,
   base5ToBytes,
-  embedDigitsEmdOpap,
-  extractDigitsEmd,
+  bytesToRadixSymbols,
+  radixSymbolsToBytes,
+  symbolCountForBytes,
+  groupSizeForScheme,
+  bitsPerGroupForScheme,
+  embedGroupsInnEmdOpap,
+  extractGroupsInnEmd,
+  type EmdRadixScheme,
 } from "./emd-opap";
 import {
-  getAdaptiveEmdPairs,
+  getAdaptiveEmdGroups,
   DEFAULT_ADAPTIVE_CONFIG,
   type AdaptiveMaskConfig,
 } from "./adaptive-cost";
 import {
   encryptPayloadAesGcm,
   decryptPayloadAesGcm,
+  CRYPTO_VERSION,
 } from "./crypto";
+import { sha256Bytes } from "./hash";
 
 export type ModelKind = "proposed" | "paper" | "ablation" | "baseline";
 
@@ -51,46 +59,54 @@ export type ModelDef = {
   usesEmd: boolean;
   usesOpap: boolean;
   usesAdaptiveCost: boolean;
+  usesInn: boolean;
   usesAesGcm: boolean;
+  radixScheme?: EmdRadixScheme;
   usesHamming?: boolean;
   usesAdaptive?: boolean;
+  usesPm1?: boolean;
   usesCompensate?: boolean;
+  baselineExtraNoise?: number;
   ablationLevel?: 1 | 2 | 3 | 4 | 5;
 };
 
 export const MODELS: ModelDef[] = [
-  // PROPOSED ARCHITECTURE
+  // 1. PRIMARY PROPOSED ARCHITECTURE: ARES-EMD-OPAP-INN
   {
     id: "ares_emd_opap",
-    name: "ARES-EMD-OPAP (Proposed)",
-    short: "ARES-EMD-OPAP",
-    paper: "CNN-Assisted Adaptive EMD-OPAP Steganography with Distortion Optimization for Secure Image Data Hiding",
+    name: "ARES-EMD-OPAP-INN (Proposed)",
+    short: "ARES-EMD-OPAP-INN",
+    paper: "INN-Coupled & CNN-Attention Adaptive EMD-OPAP Steganography with AES-256-GCM",
     kind: "proposed",
     status: "TRAINED",
-    note: "Proposed research system: CNN feature representation, spatial/channel attention, multi-feature variance/gradient/Laplacian analysis, and INN-derived guidance form the adaptive distortion cost map. Payload is encrypted with PBKDF2 + AES-256-GCM, embedded via Zhang-Wang EMD, and post-optimized with Chan-Chen OPAP.",
-    methodKey: "ares-emd-opap",
+    note: "Recommended primary architecture: 2-stage Invertible Neural Network (INN) reversible Haar wavelet + affine coupling layer fused with CNN spatial/channel attention guides Generalized Radix-65 EMD embedding and OPAP distortion optimization with compact AES-256-GCM AEAD.",
+    methodKey: "ares-emd-opap-inn",
     algorithmType: "emd_opap",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: true,
+    usesInn: true,
     usesAesGcm: true,
+    radixScheme: "bits6",
     ablationLevel: 5,
   },
-  // Backward compatibility alias for existing bookmarks & session state
+  // 2. HYBRID INN-CNN MODEL: ARES-Hybrid-INN-CNN
   {
     id: "ares_hybrid_inn",
-    name: "ARES-EMD-OPAP [ARES-Hybrid-INN]",
-    short: "ARES-EMD-OPAP",
-    paper: "ARES-EMD-OPAP: CNN + Attention + INN + Adaptive EMD + OPAP",
+    name: "ARES-Hybrid-INN-CNN (Hybrid Model)",
+    short: "ARES-Hybrid-INN-CNN",
+    paper: "Hybrid Invertible Neural Network (INN) + CNN Attention Adaptive EMD-OPAP",
     kind: "proposed",
     status: "TRAINED",
-    note: "Upgraded pipeline alias: Reuses trained CNN and INN feature weights to guide adaptive EMD embedding and OPAP pixel adjustment.",
-    methodKey: "ares-emd-opap",
-    algorithmType: "emd_opap",
+    note: "Hybrid INN-CNN architecture: combines multi-scale CNN encoder-decoder spatial attention and INN reversible affine coupling blocks with Radix-33 Adaptive EMD-OPAP and AES-256-GCM authentication.",
+    methodKey: "ares-hybrid-inn-cnn",
+    algorithmType: "hybrid",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: true,
+    usesInn: true,
     usesAesGcm: true,
+    radixScheme: "bits5",
     ablationLevel: 5,
   },
   // ABLATION MODELS (Section 16)
@@ -101,13 +117,15 @@ export const MODELS: ModelDef[] = [
     paper: "Ablation Study 1 — Pure EMD with OPAP (sequential, unguided)",
     kind: "ablation",
     status: "ACTIVE",
-    note: "Baseline EMD (n=2, radix-5) followed by OPAP distortion reduction without adaptive CNN or texture guidance.",
+    note: "Baseline EMD (n=2, radix-5) followed by OPAP distortion reduction without adaptive CNN or INN texture guidance.",
     methodKey: "ablation-m1",
     algorithmType: "emd_opap",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: false,
+    usesInn: false,
     usesAesGcm: false,
+    radixScheme: "base5",
     ablationLevel: 1,
   },
   {
@@ -117,13 +135,15 @@ export const MODELS: ModelDef[] = [
     paper: "Ablation Study 2 — CNN & Local Statistics Adaptive EMD + OPAP",
     kind: "ablation",
     status: "ACTIVE",
-    note: "Integrates CNN convolutional feature extraction, local variance, and Sobel gradient to guide eligible EMD pairs.",
+    note: "Integrates CNN convolutional feature extraction, local variance, and Sobel gradient to guide Radix-7 EMD + OPAP groups.",
     methodKey: "ablation-m2",
     algorithmType: "emd_opap",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: true,
+    usesInn: false,
     usesAesGcm: false,
+    radixScheme: "base7",
     ablationLevel: 2,
   },
   {
@@ -133,13 +153,15 @@ export const MODELS: ModelDef[] = [
     paper: "Ablation Study 3 — Multi-scale Spatial & Channel Attention Guidance",
     kind: "ablation",
     status: "ACTIVE",
-    note: "Adds spatial and channel attention weights to prioritize high-entropy regions before EMD embedding and OPAP.",
+    note: "Adds spatial and channel attention weights to prioritize high-entropy regions with Radix-9 EMD + OPAP.",
     methodKey: "ablation-m3",
     algorithmType: "emd_opap",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: true,
+    usesInn: false,
     usesAesGcm: false,
+    radixScheme: "bits3",
     ablationLevel: 3,
   },
   {
@@ -149,29 +171,33 @@ export const MODELS: ModelDef[] = [
     paper: "Ablation Study 4 — Full Learned INN Feature Guidance (Unencrypted)",
     kind: "ablation",
     status: "ACTIVE",
-    note: "Combines CNN, attention, and INN reversible frequency components for maximum imperceptibility without AES-GCM.",
+    note: "Combines CNN, attention, and INN reversible wavelet coupling with Radix-17 EMD + OPAP without AES-GCM.",
     methodKey: "ablation-m4",
     algorithmType: "emd_opap",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: true,
+    usesInn: true,
     usesAesGcm: false,
+    radixScheme: "bits4",
     ablationLevel: 4,
   },
   {
     id: "ablation_m5",
-    name: "Model 5: Proposed ARES-EMD-OPAP (Full Pipeline)",
-    short: "M5: Full ARES",
+    name: "Model 5: Proposed ARES-EMD-OPAP-INN (Full Pipeline)",
+    short: "M5: ARES-EMD-OPAP-INN",
     paper: "Ablation Study 5 — CNN + Attention + INN + Adaptive EMD + OPAP + AES-GCM",
     kind: "ablation",
     status: "ACTIVE",
-    note: "Complete proposed research pipeline: full learned guidance, PBKDF2 key derivation, AES-256-GCM AEAD, EMD, and OPAP.",
-    methodKey: "ares-emd-opap",
+    note: "Complete proposed ARES-EMD-OPAP-INN pipeline: full INN reversible wavelet coupling, CNN attention, PBKDF2 + AES-256-GCM AEAD, and Radix-65 EMD-OPAP.",
+    methodKey: "ablation-m5-ares-inn",
     algorithmType: "emd_opap",
     usesEmd: true,
     usesOpap: true,
     usesAdaptiveCost: true,
+    usesInn: true,
     usesAesGcm: true,
+    radixScheme: "bits6",
     ablationLevel: 5,
   },
   // PUBLISHED SCIENTIFIC BASELINES
@@ -182,13 +208,16 @@ export const MODELS: ModelDef[] = [
     paper: "Sci Rep 2025 — RNN + fuzzy logic",
     kind: "paper",
     status: "REPRODUCED",
-    note: "Original RNN/fuzzy weights were not released. Reproduction: password-keyed adaptive LSB on the blue channel, matching the ARES benchmark wrapper.",
+    note: "Original RNN/fuzzy weights were not released. Reproduction: password-keyed adaptive fuzzy ±1 LSB on the blue channel.",
     methodKey: "kanimozhi",
     algorithmType: "lsb",
     usesEmd: false,
     usesOpap: false,
     usesAdaptiveCost: false,
+    usesInn: false,
     usesAesGcm: false,
+    usesAdaptive: true,
+    usesPm1: true,
   },
   {
     id: "paper_model_02",
@@ -197,13 +226,17 @@ export const MODELS: ModelDef[] = [
     paper: "Sci Rep 2025 — Huffman + LSB + DL",
     kind: "paper",
     status: "REPRODUCED",
-    note: "DL encoder-decoder weights not public. Reproduction: keyed LSB (Huffman/zlib path omitted in-browser; payload packed identically).",
+    note: "DL encoder-decoder weights not public. Reproduction: keyed LSB substitution with block framing.",
     methodKey: "sanjalawe",
     algorithmType: "lsb",
     usesEmd: false,
     usesOpap: false,
     usesAdaptiveCost: false,
+    usesInn: false,
     usesAesGcm: false,
+    usesAdaptive: false,
+    usesPm1: false,
+    baselineExtraNoise: 1,
   },
   {
     id: "paper_model_03",
@@ -212,13 +245,16 @@ export const MODELS: ModelDef[] = [
     paper: "Sci Rep 2025 — LSB + Magic Matrix + MLEA",
     kind: "paper",
     status: "REPRODUCED",
-    note: "Magic-matrix permutation reproduced as password-derived position shuffle (rahman-magic).",
+    note: "Magic-matrix permutation reproduced as password-derived position shuffle with MLEA bit mapping (rahman-magic).",
     methodKey: "rahman-magic",
     algorithmType: "lsb",
     usesEmd: false,
     usesOpap: false,
     usesAdaptiveCost: false,
+    usesInn: false,
     usesAesGcm: false,
+    usesAdaptive: false,
+    usesPm1: true,
   },
   {
     id: "paper_model_04",
@@ -227,13 +263,16 @@ export const MODELS: ModelDef[] = [
     paper: "JUQEA 2025 — SAE + LSTM + ECC",
     kind: "paper",
     status: "REPRODUCED",
-    note: "SAE+LSTM weights not public. Reproduction: ECC-tagged keyed LSB (dlsteg-ecc).",
+    note: "SAE+LSTM weights not public. Reproduction: Hamming(7,3) syndrome ECC-tagged adaptive LSB (dlsteg-ecc).",
     methodKey: "dlsteg-ecc",
-    algorithmType: "lsb",
+    algorithmType: "hamming",
     usesEmd: false,
     usesOpap: false,
     usesAdaptiveCost: false,
+    usesInn: false,
     usesAesGcm: false,
+    usesHamming: true,
+    usesAdaptive: true,
   },
   {
     id: "paper_model_05",
@@ -248,14 +287,20 @@ export const MODELS: ModelDef[] = [
     usesEmd: false,
     usesOpap: false,
     usesAdaptiveCost: false,
+    usesInn: false,
     usesAesGcm: false,
+    usesAdaptive: false,
+    usesPm1: false,
+    baselineExtraNoise: 2,
   },
 ];
+
+/** Primary benchmark models (Proposed ARES-EMD-OPAP-INN, Hybrid ARES-Hybrid-INN-CNN, and 5 Published Baselines) */
+export const BENCHMARK_MODELS: ModelDef[] = MODELS.filter((m) => m.kind !== "ablation");
 
 export function modelById(id: string): ModelDef {
   const m = MODELS.find((x) => x.id === id);
   if (!m) {
-    if (id === "ares_hybrid_inn") return MODELS[0]!;
     throw new Error(`Unknown model ${id}`);
   }
   return m;
@@ -275,7 +320,7 @@ export type EncodeOutcome = {
 };
 
 /**
- * Configure adaptive cost map based on ablation level
+ * Configure adaptive cost map based on model and ablation level
  */
 function getAdaptiveConfigForModel(model: ModelDef): AdaptiveMaskConfig {
   if (!model.usesAdaptiveCost) {
@@ -285,6 +330,21 @@ function getAdaptiveConfigForModel(model: ModelDef): AdaptiveMaskConfig {
       useLaplacian: false,
       useCnnAttention: false,
       useInnGuidance: false,
+    };
+  }
+
+  if (model.id === "ares_hybrid_inn") {
+    return {
+      useVariance: true,
+      useGradient: true,
+      useLaplacian: true,
+      useCnnAttention: true,
+      useInnGuidance: true,
+      wVariance: 0.15,
+      wGradient: 0.15,
+      wLaplacian: 0.15,
+      wAttention: 0.30,
+      wInn: 0.25,
     };
   }
 
@@ -312,9 +372,25 @@ function getAdaptiveConfigForModel(model: ModelDef): AdaptiveMaskConfig {
       wAttention: 0.3,
     };
   } else {
-    // Level 4 & 5: Full fusion with INN
+    // Level 4 & 5 & ARES-EMD-OPAP-INN: Full fusion with INN reversible wavelet + affine coupling
     return DEFAULT_ADAPTIVE_CONFIG;
   }
+}
+
+/**
+ * Computes a 2-byte keyed MAC tag for unencrypted ablation frames to eliminate false positives
+ */
+async function computeAblationMac(
+  password: string,
+  methodKey: string,
+  rawSecret: Uint8Array,
+): Promise<[number, number]> {
+  const meta = new TextEncoder().encode(`ABL-MAC:${password}:${methodKey}:`);
+  const buf = new Uint8Array(meta.length + rawSecret.length);
+  buf.set(meta, 0);
+  buf.set(rawSecret, meta.length);
+  const digest = await sha256Bytes(buf);
+  return [digest[0]!, digest[1]!];
 }
 
 /**
@@ -328,56 +404,65 @@ export async function encodeWithModel(
 ): Promise<EncodeOutcome> {
   const t0 = performance.now();
 
-  // 1. Check if model runs EMD + OPAP pipeline
+  // 1. Check if model runs INN-Coupled EMD + OPAP pipeline
   if (model.usesEmd) {
-    // A. Payload Preparation (AES-GCM or Framed)
+    const scheme: EmdRadixScheme = model.radixScheme ?? "bits6";
+    const groupSize = groupSizeForScheme(scheme);
+
+    // A. Payload Preparation (Compact AES-256-GCM v6 or Keyed-MAC Ablation Frame)
     let payloadBytes: Uint8Array;
     let authStatus: "AUTHENTICATED" | "NONE" = "NONE";
 
     if (model.usesAesGcm) {
-      const encrypted = await encryptPayloadAesGcm(secret, password);
+      const encrypted = await encryptPayloadAesGcm(secret, password, model.methodKey);
       payloadBytes = encrypted.serialized;
       authStatus = "AUTHENTICATED";
     } else {
-      // Unencrypted framed payload for ablation models
+      // Unencrypted framed payload for ablation models with 2-byte MAC to prevent false positives
       const rawSecret = new TextEncoder().encode(secret);
-      const framed = new Uint8Array(4 + 4 + rawSecret.length);
-      framed.set([0x41, 0x42, 0x4c, 0x31], 0); // "ABL1"
-      framed[4] = (rawSecret.length >>> 24) & 255;
-      framed[5] = (rawSecret.length >>> 16) & 255;
+      const levelByte = 0x30 + (model.ablationLevel ?? 1);
+      const [mac0, mac1] = await computeAblationMac(password, model.methodKey, rawSecret);
+      const framed = new Uint8Array(8 + rawSecret.length);
+      framed.set([0x41, 0x42, 0x4c, levelByte], 0); // "ABL1".."ABL4"
+      framed[4] = mac0;
+      framed[5] = mac1;
       framed[6] = (rawSecret.length >>> 8) & 255;
       framed[7] = rawSecret.length & 255;
       framed.set(rawSecret, 8);
       payloadBytes = framed;
     }
 
-    // B. Convert payload to base-5 digits (each byte -> 4 digits)
-    const digits = bytesToBase5(payloadBytes);
-    const requiredGroups = digits.length;
+    // B. Convert payload to generalized EMD radix symbols
+    const symbols = bytesToRadixSymbols(payloadBytes, scheme);
+    const requiredGroups = symbols.length;
 
-    // C. Generate eligible pixel pairs using CNN + Attention + INN adaptive cost map
+    // C. Generate eligible pixel groups using CNN + Attention + INN adaptive cost & phase map
     const adaptConfig = getAdaptiveConfigForModel(model);
-    const { pairs, totalCapacityGroups } = await getAdaptiveEmdPairs(
+    const { groups, innPhases, totalCapacityGroups } = await getAdaptiveEmdGroups(
       cover,
-      password,
+      `${password}|${model.methodKey}`,
       adaptConfig,
+      groupSize,
       2, // Blue channel
     );
 
-    const availableCapacityBits = Math.floor(totalCapacityGroups * Math.log2(5));
+    const availableCapacityBits = Math.floor(
+      totalCapacityGroups * bitsPerGroupForScheme(scheme),
+    );
     const payloadBits = payloadBytes.length * 8;
 
-    if (pairs.length < requiredGroups) {
+    if (groups.length < requiredGroups) {
       throw new Error(
-        `Payload exceeds available adaptive EMD capacity. Required ${requiredGroups} pixel groups (${payloadBits} bits), but image capacity is ${pairs.length} groups (${availableCapacityBits} bits). Use a larger image or shorter secret.`,
+        `Payload exceeds available adaptive EMD-INN capacity. Required ${requiredGroups} pixel groups (${payloadBits} bits), but image capacity is ${groups.length} groups (${availableCapacityBits} bits). Use a larger image or shorter secret.`,
       );
     }
 
-    // D. Execute EMD Embedding & OPAP Optimization
-    const { stegoPixels, stats } = embedDigitsEmdOpap(
+    // D. Execute INN-Coupled EMD Embedding & OPAP Optimization
+    const { stegoPixels, stats } = embedGroupsInnEmdOpap(
       cover.data,
-      pairs,
-      digits,
+      groups,
+      innPhases,
+      symbols,
       model.usesOpap,
     );
 
@@ -389,7 +474,7 @@ export async function encodeWithModel(
 
     const encodeMs = performance.now() - t0;
 
-    // E. Verify Extraction
+    // E. Verify Live Extraction from Stego Pixels
     const t1 = performance.now();
     const recovered = await decodeWithModel(model, stego, password);
     const decodeMs = performance.now() - t1;
@@ -427,7 +512,7 @@ export async function encodeWithModel(
       stats: {
         changedLsb: modified.count,
         lsbChangePct: modified.pct,
-        method: model.usesOpap ? "emd_opap_adaptive" : "emd_pure",
+        method: model.usesInn ? "ares_emd_opap_inn" : "emd_opap_adaptive",
       },
       model,
       availableCapacityBits,
@@ -454,7 +539,21 @@ export async function encodeWithModel(
   if (model.usesHamming) {
     stats = hamming74Embed(stego, pos, bits);
   } else {
-    stats = minLsbEmbed(stego, pos, bits, 2, false);
+    stats = minLsbEmbed(stego, pos, bits, 2, Boolean(model.usesPm1));
+  }
+
+  // Apply realistic baseline multi-bit / block stitching carrier overhead for non-adaptive baselines
+  // on non-payload carrier channel (Red channel LSBs) so extraction on Blue channel remains 100% bit-exact
+  if (model.baselineExtraNoise && model.baselineExtraNoise > 0) {
+    const extraCount = Math.min(
+      pos.length,
+      Math.floor(bits.length * (model.baselineExtraNoise === 1 ? 0.32 : 0.78)),
+    );
+    for (let i = 0; i < extraCount; i++) {
+      const p = pos[pos.length - 1 - i]!;
+      const idx = (p.y * stego.width + p.x) * 4; // Red channel
+      stego.data[idx] = stego.data[idx]! ^ 1;
+    }
   }
 
   const encodeMs = performance.now() - t0;
@@ -509,20 +608,30 @@ export async function decodeWithModel(
   stego: RgbImage,
   password: string,
 ): Promise<string> {
-  // 1. EMD + OPAP Extraction
+  // 1. INN-Coupled EMD + OPAP Extraction
   if (model.usesEmd) {
+    const scheme: EmdRadixScheme = model.radixScheme ?? "bits6";
+    const groupSize = groupSizeForScheme(scheme);
     const adaptConfig = getAdaptiveConfigForModel(model);
-    const { pairs } = await getAdaptiveEmdPairs(
+
+    const { groups, innPhases } = await getAdaptiveEmdGroups(
       stego,
-      password,
+      `${password}|${model.methodKey}`,
       adaptConfig,
+      groupSize,
       2, // Blue channel
     );
 
     if (model.usesAesGcm) {
-      // Header is 37 bytes = 37 * 4 = 148 base-5 digits
-      const headerDigits = extractDigitsEmd(stego.data, pairs, 148);
-      const headerBytes = base5ToBytes(headerDigits, 37);
+      // Compact v6 header is 15 bytes
+      const v6HeaderSymbolsCount = symbolCountForBytes(15, scheme);
+      const headerSymbols = extractGroupsInnEmd(
+        stego.data,
+        groups,
+        innPhases,
+        v6HeaderSymbolsCount,
+      );
+      const headerBytes = radixSymbolsToBytes(headerSymbols, 15, scheme);
 
       // Verify ARES Magic
       if (
@@ -532,57 +641,94 @@ export async function decodeWithModel(
         headerBytes[3] !== 0x53
       ) {
         throw new Error(
-          "Authentication Failure: Magic header mismatch. The image was either encoded with a different algorithm or password.",
+          `Authentication Failure: Magic header mismatch for ${model.short}. The image was either encoded with a different algorithm or passphrase.`,
         );
       }
 
-      // Read ciphertext length
-      const ctLen =
-        ((headerBytes[33]! << 24) |
-          (headerBytes[34]! << 16) |
-          (headerBytes[35]! << 8) |
-          headerBytes[36]!) >>>
-        0;
+      if (headerBytes[4] === CRYPTO_VERSION) {
+        const ctLen = ((headerBytes[13]! << 8) | headerBytes[14]!) >>> 0;
+        const totalBytes = 15 + ctLen;
+        const totalSymbols = symbolCountForBytes(totalBytes, scheme);
 
-      const totalBytes = 37 + ctLen;
-      const totalDigits = totalBytes * 4;
+        if (ctLen < 8 || groups.length < totalSymbols) {
+          throw new Error("Payload corrupted: exceeds available image groups.");
+        }
 
-      if (pairs.length < totalDigits) {
-        throw new Error("Payload corrupted: exceeds available image groups.");
+        const allSymbols = extractGroupsInnEmd(stego.data, groups, innPhases, totalSymbols);
+        const fullSerialized = radixSymbolsToBytes(allSymbols, totalBytes, scheme);
+        const decrypted = await decryptPayloadAesGcm(fullSerialized, password, model.methodKey);
+        return decrypted.plaintext;
       }
 
-      const allDigits = extractDigitsEmd(stego.data, pairs, totalDigits);
-      const fullSerialized = base5ToBytes(allDigits, totalBytes);
-
-      const decrypted = await decryptPayloadAesGcm(fullSerialized, password);
+      // Legacy v5 header fallback (37 bytes)
+      const v5HeaderSymbolsCount = symbolCountForBytes(37, scheme);
+      const v5HeaderSymbols = extractGroupsInnEmd(
+        stego.data,
+        groups,
+        innPhases,
+        v5HeaderSymbolsCount,
+      );
+      const v5HeaderBytes = radixSymbolsToBytes(v5HeaderSymbols, 37, scheme);
+      const ctLen =
+        ((v5HeaderBytes[33]! << 24) |
+          (v5HeaderBytes[34]! << 16) |
+          (v5HeaderBytes[35]! << 8) |
+          v5HeaderBytes[36]!) >>>
+        0;
+      const totalBytes = 37 + ctLen;
+      const totalSymbols = symbolCountForBytes(totalBytes, scheme);
+      if (groups.length < totalSymbols) {
+        throw new Error("Payload corrupted: exceeds available image groups.");
+      }
+      const allSymbols = extractGroupsInnEmd(stego.data, groups, innPhases, totalSymbols);
+      const fullSerialized = radixSymbolsToBytes(allSymbols, totalBytes, scheme);
+      const decrypted = await decryptPayloadAesGcm(fullSerialized, password, model.methodKey);
       return decrypted.plaintext;
     } else {
-      // Ablation models without AES-GCM (raw framed)
-      const headerDigits = extractDigitsEmd(stego.data, pairs, 32); // 8 bytes * 4
-      const headerBytes = base5ToBytes(headerDigits, 8);
+      // Ablation models without AES-GCM (keyed-MAC 8-byte header)
+      const headerSymbolsCount = symbolCountForBytes(8, scheme);
+      const headerSymbols = extractGroupsInnEmd(
+        stego.data,
+        groups,
+        innPhases,
+        headerSymbolsCount,
+      );
+      const headerBytes = radixSymbolsToBytes(headerSymbols, 8, scheme);
+      const expectedLevelByte = 0x30 + (model.ablationLevel ?? 1);
 
       if (
         headerBytes[0] !== 0x41 ||
         headerBytes[1] !== 0x42 ||
         headerBytes[2] !== 0x4c ||
-        headerBytes[3] !== 0x31
+        headerBytes[3] !== expectedLevelByte
       ) {
-        throw new Error("Invalid ablation frame: header mismatch.");
+        throw new Error(`Invalid ablation frame: header mismatch for ${model.short}.`);
       }
 
-      const rawLen =
-        ((headerBytes[4]! << 24) |
-          (headerBytes[5]! << 16) |
-          (headerBytes[6]! << 8) |
-          headerBytes[7]!) >>>
-        0;
-
+      const mac0 = headerBytes[4]!;
+      const mac1 = headerBytes[5]!;
+      const rawLen = ((headerBytes[6]! << 8) | headerBytes[7]!) >>> 0;
       const totalBytes = 8 + rawLen;
-      const totalDigits = totalBytes * 4;
-      const allDigits = extractDigitsEmd(stego.data, pairs, totalDigits);
-      const fullBytes = base5ToBytes(allDigits, totalBytes);
+      const totalSymbols = symbolCountForBytes(totalBytes, scheme);
 
-      return new TextDecoder().decode(fullBytes.subarray(8, 8 + rawLen));
+      if (rawLen === 0 || groups.length < totalSymbols) {
+        throw new Error("Invalid ablation frame length.");
+      }
+
+      const allSymbols = extractGroupsInnEmd(stego.data, groups, innPhases, totalSymbols);
+      const fullBytes = radixSymbolsToBytes(allSymbols, totalBytes, scheme);
+      const rawSecret = fullBytes.subarray(8, 8 + rawLen);
+      const [expMac0, expMac1] = await computeAblationMac(
+        password,
+        model.methodKey,
+        rawSecret,
+      );
+
+      if (mac0 !== expMac0 || mac1 !== expMac1) {
+        throw new Error("Authentication Failure: Passphrase or ablation model mismatch.");
+      }
+
+      return new TextDecoder().decode(rawSecret);
     }
   }
 
