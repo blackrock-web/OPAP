@@ -168,7 +168,7 @@ export async function decryptPayloadAesGcm(
         plaintext: new TextDecoder().decode(plainBuffer),
         isAuthentic: true,
       };
-    } catch (_e) {
+    } catch {
       throw new Error(
         "Authentication Failure: AES-GCM tag mismatch. The passphrase or model selection is incorrect.",
       );
@@ -213,7 +213,7 @@ export async function decryptPayloadAesGcm(
       plaintext: new TextDecoder().decode(plainBuffer),
       isAuthentic: true,
     };
-  } catch (_e) {
+  } catch {
     throw new Error(
       "Authentication Failure: AES-GCM tag mismatch. The passphrase is incorrect or the steganogram was tampered with.",
     );

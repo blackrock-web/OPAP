@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,6 @@ import {
   Cpu,
   Trophy,
   BarChart3,
-  History,
   Download,
   FileSearch,
   Unlock,
@@ -27,17 +26,11 @@ import {
   CheckCircle2,
   Zap,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: DashboardPage });
 
 function DashboardPage() {
-  const { bench, history, setEncode, lastCover, lastCoverUrl, lastStegoUrl, lastMetrics, isHydrated } = useSession();
-  const [hasMounted, setHasMounted] = useState(false);
-
-  useEffect(() => {
-    setHasMounted(true);
-  }, []);
+  const { setEncode, lastCover, lastCoverUrl, lastStegoUrl, lastMetrics } = useSession();
 
   // Selected Model for Testing (Proposed or Ablation)
   const [selectedModelId, setSelectedModelId] = useState("ares_emd_opap");

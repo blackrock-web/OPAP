@@ -1,12 +1,60 @@
 """
 ARES-EMD-OPAP: High-Level Embedding and Extraction Pipelines.
+
+Pipeline:
+  - Encrypt payload with PBKDF2-HMAC-SHA256 + AES-256-GCM (when `use_crypto=True`)
+  - Convert frame bytes to base-5 digits (4 digits per byte)
+  - Compute adaptive pixel-pair ranking strictly from R+G luma using classical
+    features + real PyTorch CNN (`use_cnn`) + real PyTorch INN (`use_inn`)
+  - Embed digits into blue channel via EMD (n=2, mod 5) + OPAP residue-preserving optimization
+  - Note: CNN and INN guide spatial locations only; EMD embeds payload; AES-GCM authenticates secret.
 """
 
-from typing import Dict, Any, Tuple, List
-from .emd import emd_extract, emd_embed_group, bytes_to_base5, base5_to_bytes
+import struct
+from typing import Any, Dict, List, Optional, Tuple
+
+from .emd import base5_to_bytes, bytes_to_base5, emd_embed_group, emd_extract
 from .opap import opap_optimize_group
-from ..adaptive.cost_map import get_adaptive_pixel_pairs
-from ..crypto.aes_gcm import encrypt_payload, decrypt_payload
+from ..adaptive.cost_map import DEFAULT_COST_WEIGHTS, get_adaptive_pixel_pairs
+from ..crypto.aes_gcm import decrypt_payload, encrypt_payload
+
+
+def _resolve_guidance_weights(
+    use_adaptive: bool,
+    use_cnn: bool,
+    use_inn: bool,
+    weights: Optional[Dict[str, float]] = None,
+) -> Tuple[Dict[str, float], str]:
+    if not use_adaptive:
+        return {"var": 0.0, "grad": 0.0, "lap": 0.0, "cnn": 0.0, "inn": 0.0}, "sequential_unguided"
+
+    w = dict(DEFAULT_COST_WEIGHTS) if weights is None else dict(weights)
+    if "att" in w and "cnn" not in w:
+        w["cnn"] = w["att"]
+
+    if not use_cnn:
+        w["cnn"] = 0.0
+        w["att"] = 0.0
+    if not use_inn:
+        w["inn"] = 0.0
+
+    has_classical = (w.get("var", 0.0) + w.get("grad", 0.0) + w.get("lap", 0.0)) > 0
+    has_cnn = use_cnn and w.get("cnn", 0.0) > 0
+    has_inn = use_inn and w.get("inn", 0.0) > 0
+
+    if has_cnn and has_inn:
+        mode = "classical+cnn+inn" if has_classical else "cnn+inn"
+    elif has_cnn:
+        mode = "classical+cnn" if has_classical else "cnn_only"
+    elif has_inn:
+        mode = "classical+inn" if has_classical else "inn_only"
+    elif has_classical:
+        mode = "classical_adaptive"
+    else:
+        mode = "sequential_unguided"
+
+    return w, mode
+
 
 def embed(
     cover_rgb: List[List[List[int]]],
@@ -15,7 +63,9 @@ def embed(
     use_adaptive: bool = True,
     use_opap: bool = True,
     use_crypto: bool = True,
-    weights: Dict[str, float] = None,
+    use_cnn: bool = True,
+    use_inn: bool = True,
+    weights: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[List[List[int]]], Dict[str, Any]]:
     """
     Complete ARES-EMD-OPAP embedding pipeline.
@@ -28,22 +78,38 @@ def embed(
     if use_crypto:
         payload_bytes = encrypt_payload(secret_data, passphrase)
     else:
+        if not secret_data:
+            raise ValueError("Secret payload cannot be empty")
         raw = secret_data.encode("utf-8")
         payload_bytes = b"ABL1" + len(raw).to_bytes(4, "big") + raw
 
     digits = bytes_to_base5(payload_bytes)
     required_groups = len(digits)
 
-    # 2. Extract R+G luma for adaptive decisions
+    # 2. Extract R+G luma for adaptive decisions (invariant to blue-channel embedding)
     rg_luma = [
         [(cover_rgb[y][x][0] + cover_rgb[y][x][1]) // 2 for x in range(width)]
         for y in range(height)
     ]
 
-    # 3. Generate eligible pixel pairs
-    pair_coords = get_adaptive_pixel_pairs(rg_luma, width, height, passphrase, weights if use_adaptive else {"var": 0})
+    # 3. Generate eligible pixel pairs (n=2 horizontal)
+    eff_weights, guidance_mode = _resolve_guidance_weights(
+        use_adaptive=use_adaptive,
+        use_cnn=use_cnn,
+        use_inn=use_inn,
+        weights=weights,
+    )
+    pair_coords = get_adaptive_pixel_pairs(
+        rg_luma,
+        width,
+        height,
+        passphrase,
+        weights=eff_weights,
+        use_cnn=use_cnn and use_adaptive,
+        use_inn=use_inn and use_adaptive,
+    )
     available_groups = len(pair_coords)
-    capacity_bits = int(available_groups * 2.3219) # log2(5) ~= 2.3219
+    capacity_bits = int(available_groups * 2.321928)  # log2(5) ~= 2.321928
 
     if available_groups < required_groups:
         raise ValueError(
@@ -86,39 +152,56 @@ def embed(
 
         err1 = abs(s1 - c1)
         err2 = abs(s2 - c2)
-        if s1 != c1: modified_pixels += 1
-        if s2 != c2: modified_pixels += 1
+        if s1 != c1:
+            modified_pixels += 1
+        if s2 != c2:
+            modified_pixels += 1
 
         total_abs_err += err1 + err2
         total_squared_err += (s1 - c1) ** 2 + (s2 - c2) ** 2
         max_err = max(max_err, err1, err2)
 
     total_eval_pixels = required_groups * 2
+    total_image_pixels = width * height
     metadata = {
         "payload_bytes": len(payload_bytes),
         "payload_bits": len(payload_bytes) * 8,
         "required_groups": required_groups,
+        "groups_used": required_groups,
+        "available_groups": available_groups,
         "available_capacity_bits": capacity_bits,
         "modified_pixels": modified_pixels,
         "modified_pixel_pct": (100.0 * modified_pixels) / max(1, total_eval_pixels),
+        "image_modification_rate_pct": (100.0 * modified_pixels) / max(1, total_image_pixels),
         "average_abs_error": total_abs_err / max(1, total_eval_pixels),
         "max_pixel_error": max_err,
         "mse_blue": total_squared_err / max(1, total_eval_pixels),
         "opap_optimized_count": opap_optimized,
-        "auth_status": "AUTHENTICATED" if use_crypto else "NONE",
+        "auth_status": "AES-256-GCM" if use_crypto else "NONE",
+        "guidance_mode": guidance_mode,
+        "use_adaptive": use_adaptive,
+        "use_opap": use_opap,
+        "use_crypto": use_crypto,
+        "use_cnn": bool(use_adaptive and use_cnn and eff_weights.get("cnn", 0.0) > 0),
+        "use_inn": bool(use_adaptive and use_inn and eff_weights.get("inn", 0.0) > 0),
     }
 
     return stego_rgb, metadata
+
 
 def extract(
     stego_rgb: List[List[List[int]]],
     passphrase: str,
     use_adaptive: bool = True,
     use_crypto: bool = True,
-    weights: Dict[str, float] = None,
+    use_cnn: bool = True,
+    use_inn: bool = True,
+    weights: Optional[Dict[str, float]] = None,
 ) -> str:
     """
     Complete ARES-EMD-OPAP extraction pipeline.
+    Reconstructs the R+G luma cost map and password-keyed adaptive pairs, extracts
+    base-5 EMD digits from the blue channel, and authenticates/decrypts via AES-256-GCM.
     """
     height = len(stego_rgb)
     width = len(stego_rgb[0])
@@ -129,10 +212,27 @@ def extract(
         for y in range(height)
     ]
 
-    pair_coords = get_adaptive_pixel_pairs(rg_luma, width, height, passphrase, weights if use_adaptive else {"var": 0})
+    eff_weights, _ = _resolve_guidance_weights(
+        use_adaptive=use_adaptive,
+        use_cnn=use_cnn,
+        use_inn=use_inn,
+        weights=weights,
+    )
+    pair_coords = get_adaptive_pixel_pairs(
+        rg_luma,
+        width,
+        height,
+        passphrase,
+        weights=eff_weights,
+        use_cnn=use_cnn and use_adaptive,
+        use_inn=use_inn and use_adaptive,
+    )
 
     if use_crypto:
         # Header is 37 bytes -> 148 base-5 digits
+        if len(pair_coords) < 148:
+            raise ValueError("Stego image too small to contain an ARES AES-GCM header")
+
         header_digits = []
         for i in range(148):
             x1, y1, x2, y2 = pair_coords[i]
@@ -142,10 +242,12 @@ def extract(
         if header_bytes[:4] != b"ARES":
             raise ValueError("Authentication Failure: Magic header mismatch")
 
-        import struct
         ct_len = struct.unpack(">I", header_bytes[33:37])[0]
         total_bytes = 37 + ct_len
         total_digits = total_bytes * 4
+
+        if total_digits > len(pair_coords) or ct_len < 16:
+            raise ValueError("Authentication Failure: Corrupted ciphertext length in header")
 
         all_digits = []
         for i in range(total_digits):
@@ -156,6 +258,9 @@ def extract(
         return decrypt_payload(full_serialized, passphrase)
     else:
         # Unencrypted framed extraction
+        if len(pair_coords) < 32:
+            raise ValueError("Stego image too small to contain ablation frame header")
+
         header_digits = []
         for i in range(32):
             x1, y1, x2, y2 = pair_coords[i]
@@ -163,12 +268,14 @@ def extract(
 
         header_bytes = base5_to_bytes(header_digits, 8)
         if header_bytes[:4] != b"ABL1":
-            raise ValueError("Invalid ablation frame")
+            raise ValueError("Invalid ablation frame: magic mismatch")
 
-        import struct
         raw_len = struct.unpack(">I", header_bytes[4:8])[0]
         total_bytes = 8 + raw_len
         total_digits = total_bytes * 4
+
+        if total_digits > len(pair_coords):
+            raise ValueError("Invalid ablation frame: length exceeds capacity")
 
         all_digits = []
         for i in range(total_digits):
@@ -176,4 +283,5 @@ def extract(
             all_digits.append(emd_extract(stego_rgb[y1][x1][2], stego_rgb[y2][x2][2]))
 
         full_bytes = base5_to_bytes(all_digits, total_bytes)
-        return full_bytes[8:8 + raw_len].decode("utf-8")
+        return full_bytes[8 : 8 + raw_len].decode("utf-8")
+

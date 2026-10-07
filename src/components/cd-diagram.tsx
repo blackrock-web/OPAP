@@ -46,7 +46,7 @@ export function CDDiagram({
   }
 
   // Sort models by average rank ascending (1 = best)
-  const sorted = modelIds
+  const rawSorted = modelIds
     .map((id, index) => {
       const def = MODELS.find((m) => m.id === id);
       return {
@@ -54,11 +54,15 @@ export function CDDiagram({
         short: def?.short || id,
         name: def?.name || id,
         paper: def?.paper || "",
-        isAres: id === "ares_emd_opap" || id === "ares_hybrid_inn",
         rank: avgRanks[index] ?? (index + 1),
       };
     })
     .sort((a, b) => a.rank - b.rank);
+
+  const sorted = rawSorted.map((item, idx) => ({
+    ...item,
+    isAres: idx === 0,
+  }));
 
   // SVG Canvas dimensions
   const width = 960;
@@ -594,7 +598,7 @@ export function CDDiagram({
           </span>
           <span className="text-muted-foreground">
             <strong className="text-foreground">Optimal Model:</strong>{" "}
-            {bestModel ? `${bestModel.name} (Rank ${bestModel.rank.toFixed(2)})` : "ARES-Hybrid-INN"}
+            {bestModel ? `${bestModel.name} (Rank ${bestModel.rank.toFixed(2)})` : "Pending"}
           </span>
         </div>
 

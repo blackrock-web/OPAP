@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ares_emd_opap"
+version = "2.1.0"
+description = "ARES-EMD-OPAP: Real PyTorch CNN & INN Guided Adaptive EMD-OPAP Steganography with AES-256-GCM"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  "cryptography>=41.0.0",
+  "numpy>=1.23.0",
+  "Pillow>=9.0.0",
+  "tqdm>=4.65.0",
+]
+
+[project.scripts]
+ares-emd-opap = "ares_emd_opap.main:main"

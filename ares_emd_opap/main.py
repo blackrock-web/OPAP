@@ -1,24 +1,46 @@
 """
 ARES-EMD-OPAP CLI: Command-Line Interface and Research Verification.
+
+Usage:
+  python -m ares_emd_opap.main test
+  python -m ares_emd_opap.main ablation --size 128
+  python -m ares_emd_opap.main train-guidance --epochs 25
 """
 
-import sys
 import argparse
-import json
+import sys
+
 from .evaluation.experiments import run_ablation_study
-from .test_suite import run_all_tests, generate_synthetic_image
+from .guidance.train import train_all_guidance_models
+from .test_suite import generate_synthetic_image, run_all_tests
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ARES-EMD-OPAP: CNN-Assisted Adaptive EMD-OPAP Steganography with Distortion Optimization"
+        description="ARES-EMD-OPAP: CNN & INN Guided Adaptive EMD-OPAP Steganography with AES-256-GCM"
     )
     sub = parser.add_subparsers(dest="cmd", help="Subcommand to run")
 
     sub.add_parser("test", help="Run 15-point automated validation test suite")
-    ab_parser = sub.add_parser("ablation", help="Run 5-model ablation study")
-    ab_parser.add_argument("--size", type=int, default=128, help="Synthetic cover image dimension (e.g. 128)")
-    ab_parser.add_argument("--secret", type=str, default="ARES-EMD-OPAP 2026 Research Benchmark Payload", help="Secret text payload")
-    ab_parser.add_argument("--password", type=str, default="ResearchKey2026!", help="Passphrase")
+
+    ab_parser = sub.add_parser("ablation", help="Run 5-model runtime ablation study")
+    ab_parser.add_argument(
+        "--size", type=int, default=128, help="Synthetic cover image dimension (e.g. 128)"
+    )
+    ab_parser.add_argument(
+        "--secret",
+        type=str,
+        default="ARES-EMD-OPAP 2026 Research Benchmark Payload",
+        help="Secret text payload",
+    )
+    ab_parser.add_argument(
+        "--password", type=str, default="ResearchKey2026!", help="Passphrase"
+    )
+
+    tr_parser = sub.add_parser(
+        "train-guidance", help="Train and export CNN and INN guidance checkpoints"
+    )
+    tr_parser.add_argument("--epochs", type=int, default=25, help="Training epochs")
 
     args = parser.parse_args()
 
@@ -31,17 +53,32 @@ def main():
         print(f"Running 5-Model Ablation Study with payload: '{args.secret}'...")
         results = run_ablation_study(img, args.secret, args.password)
 
-        print("\n" + "=" * 90)
-        print("ARES-EMD-OPAP ABLATION STUDY RESULTS")
-        print("=" * 90)
-        header = f"{'Model':<40s} | {'PSNR (dB)':<9s} | {'SSIM':<6s} | {'MSE':<6s} | {'Mod Pix':<7s} | {'Acc (%)':<7s} | {'Runtime'}"
+        print("\n" + "=" * 112)
+        print("ARES-EMD-OPAP RUNTIME-MEASURED ABLATION STUDY RESULTS")
+        print("=" * 112)
+        header = (
+            f"{'Model':<46s} | {'PSNR (dB)':<9s} | {'SSIM':<6s} | {'MSE':<6s} | "
+            f"{'Mod Pix':<7s} | {'ModRate%':<8s} | {'Acc (%)':<7s} | {'Runtime'}"
+        )
         print(header)
-        print("-" * 90)
+        print("-" * 112)
         for r in results:
-            print(f"{r['name']:<40s} | {r['psnr']:<9.2f} | {r['ssim']:<6.4f} | {r['mse']:<6.4f} | {r['modified_pixels']:<7d} | {r['extraction_accuracy']:<7.1f} | {r['runtime_ms']:.1f}ms")
-        print("=" * 90)
+            print(
+                f"{r['name']:<46s} | {r['psnr']:<9.2f} | {r['ssim']:<6.4f} | "
+                f"{r['mse']:<6.4f} | {r['modified_pixels']:<7d} | "
+                f"{r['modified_pixel_pct']:<8.2f} | {r['extraction_accuracy']:<7.1f} | "
+                f"{r['runtime_ms']:.1f}ms"
+            )
+        print("=" * 112)
+    elif args.cmd == "train-guidance":
+        summary = train_all_guidance_models(epochs=args.epochs)
+        print("Trained and exported CNN and INN guidance checkpoints:")
+        for k, v in summary.items():
+            print(f"  {k}: {v}")
     else:
         parser.print_help()
 
+
 if __name__ == "__main__":
     main()
+

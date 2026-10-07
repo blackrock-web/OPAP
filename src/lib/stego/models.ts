@@ -21,8 +21,6 @@ import {
 import { bitsFromBytes, bytesFromBits, packPayload, unpackPayload } from "./pack";
 import { type Coord, type RgbImage } from "./pixels";
 import {
-   bytesToBase5,
-  base5ToBytes,
   bytesToRadixSymbols,
   radixSymbolsToBytes,
   symbolCountForBytes,

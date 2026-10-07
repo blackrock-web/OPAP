@@ -305,8 +305,6 @@ function DecoderPage() {
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 w-full">
             {MODELS.map((m) => {
               const isSelected = selectedModelId === m.id;
-              const isPrimaryAres = m.id === "ares_emd_opap";
-              const isHybridAres = m.id === "ares_hybrid_inn";
               return (
                 <button
                   key={m.id}
@@ -323,17 +321,8 @@ function DecoderPage() {
                     <span className="font-display text-sm font-bold text-foreground">
                       {m.name}
                     </span>
-                    <span
-                      className={cn(
-                        "rounded px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wider shrink-0",
-                        isPrimaryAres
-                          ? "bg-primary text-primary-foreground"
-                          : isHybridAres
-                          ? "bg-blue-500/20 text-blue-700 dark:text-blue-300"
-                          : "bg-muted text-muted-foreground",
-                      )}
-                    >
-                      {isPrimaryAres ? "RECOMMENDED" : isHybridAres ? "HYBRID INN-CNN" : m.short}
+                    <span className="rounded bg-muted px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground shrink-0">
+                      {m.short}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-muted-foreground line-clamp-2">

@@ -399,11 +399,42 @@ export const SAMPLE_COVERS: SampleImage[] = [
   },
 ];
 
+function generatePurePixelFallback(
+  type: string,
+  width: number,
+  height: number,
+): RgbImage {
+  const data = new Uint8ClampedArray(width * height * 4);
+  let seed = 0x12345678;
+  for (let i = 0; i < type.length; i++) {
+    seed = Math.imul(seed ^ type.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      const idx = (y * width + x) * 4;
+      const wave = Math.round(45 * Math.sin((x + (seed & 15)) * 0.08) * Math.cos((y + ((seed >>> 4) & 15)) * 0.08));
+      const gradR = Math.round((x / Math.max(1, width - 1)) * 120) + 60;
+      const gradG = Math.round((y / Math.max(1, height - 1)) * 120) + 60;
+      const gradB = Math.round(((x + y) / Math.max(1, width + height - 2)) * 110) + 65;
+      const noise = ((seed >>> 16) % 25) - 12;
+      data[idx] = Math.max(8, Math.min(247, gradR + wave + noise));
+      data[idx + 1] = Math.max(8, Math.min(247, gradG - wave + noise));
+      data[idx + 2] = Math.max(8, Math.min(247, gradB + Math.trunc(wave / 2) + noise));
+      data[idx + 3] = 255;
+    }
+  }
+  return { width, height, data };
+}
+
 export function generateSampleImage(
   type: "portrait" | "texture" | "peppers" | "geometric" | "airplane" | "barbara" | "lake",
   width = 384,
   height = 384,
 ): RgbImage {
+  if (typeof document === "undefined") {
+    return generatePurePixelFallback(type, width, height);
+  }
   switch (type) {
     case "portrait":
       return generatePortraitSample(width, height);
